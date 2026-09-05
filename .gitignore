@@ -1,0 +1,36 @@
+# Windows and IDE files
+.DS_Store
+Thumbs.db
+.idea/
+*.iml
+
+# Desktop Bridge
+/desktop_bridge/node_modules/
+/desktop_bridge/dist/
+/desktop_bridge/*.log
+/desktop_bridge/coverage/
+
+# Android and Gradle
+/android/.gradle/
+/android/.kotlin/
+/android/build/
+/android/app/build/
+/android/local.properties
+/android/**/captures/
+
+# Local UI verification artifacts
+/android/*.png
+/android/*.jpg
+/android/*.xml
+
+# Local credentials and environment
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+
+# Archives
+*.zip
+*.7z
+*.rar

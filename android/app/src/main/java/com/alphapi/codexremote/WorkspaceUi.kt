@@ -1,0 +1,357 @@
+package com.alphapi.codexremote
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.LaptopWindows
+import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+
+internal const val OPEN_TASKS_KEY = "__open__"
+
+@Composable
+internal fun ProjectDrawerContent(
+    groups: List<ProjectGroup>,
+    selectedKey: String,
+    onSelect: (String) -> Unit,
+    onDisconnect: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val allTasks = groups.sumOf { it.tasks.size }
+    val openTasks = groups.sumOf { group -> group.tasks.count { it.ownerAvailable } }
+    ModalDrawerSheet(modifier.widthIn(max = 320.dp)) {
+        Text(
+            "Codex Remote",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp),
+        )
+        NavigationDrawerItem(
+            label = { DrawerLabel("所有任务", allTasks) },
+            selected = selectedKey == ProjectGroup.ALL_KEY,
+            onClick = { onSelect(ProjectGroup.ALL_KEY) },
+            icon = { Icon(Icons.Default.History, null) },
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        NavigationDrawerItem(
+            label = { DrawerLabel("桌面已打开", openTasks) },
+            selected = selectedKey == OPEN_TASKS_KEY,
+            onClick = { onSelect(OPEN_TASKS_KEY) },
+            icon = { Icon(Icons.Default.LaptopWindows, null) },
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        HorizontalDivider(Modifier.padding(horizontal = 20.dp, vertical = 10.dp))
+        Text(
+            "项目",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 6.dp),
+        )
+        LazyColumn(Modifier.weight(1f)) {
+            items(groups, key = { it.key }) { group ->
+                NavigationDrawerItem(
+                    label = { DrawerLabel(group.name, group.tasks.size) },
+                    selected = selectedKey == group.key,
+                    onClick = { onSelect(group.key) },
+                    icon = {
+                        Icon(
+                            if (selectedKey == group.key) Icons.Default.FolderOpen else Icons.Default.Folder,
+                            null,
+                        )
+                    },
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                )
+            }
+        }
+        HorizontalDivider(Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+        NavigationDrawerItem(
+            label = { Text("断开并清除配对") },
+            selected = false,
+            onClick = onDisconnect,
+            icon = { Icon(Icons.Default.LinkOff, null) },
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+        )
+    }
+}
+
+@Composable
+private fun DrawerLabel(label: String, count: Int) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Spacer(Modifier.width(8.dp))
+        Text(count.toString(), style = MaterialTheme.typography.labelMedium)
+    }
+}
+
+internal fun filteredProjectGroups(groups: List<ProjectGroup>, selectedKey: String): List<ProjectGroup> = when (selectedKey) {
+    ProjectGroup.ALL_KEY -> groups
+    OPEN_TASKS_KEY -> groups.mapNotNull { group ->
+        group.tasks.filter { it.ownerAvailable }.takeIf(List<TaskDto>::isNotEmpty)?.let { group.copy(tasks = it) }
+    }
+    else -> groups.filter { it.key == selectedKey }
+}
+
+@Composable
+internal fun ProjectTaskList(
+    groups: List<ProjectGroup>,
+    selectedKey: String,
+    selectedThreadId: String?,
+    onTaskClick: (TaskDto) -> Unit,
+) {
+    val visibleGroups = remember(groups, selectedKey) { filteredProjectGroups(groups, selectedKey) }
+    if (visibleGroups.isEmpty()) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("这里还没有任务", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        return
+    }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        visibleGroups.forEach { group ->
+            item("header:${group.key}") {
+                Column(Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 4.dp)) {
+                    Text(group.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    group.cwd?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+            items(group.tasks, key = { it.threadId }) { task ->
+                Card(
+                    onClick = { onTaskClick(task) },
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (task.threadId == selectedThreadId) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else MaterialTheme.colorScheme.surface,
+                    ),
+                    shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(task.title, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        val availability = if (task.ownerAvailable) "桌面已打开" else "历史"
+                        Text(
+                            "$availability  ·  ${statusLabel(task.status)}  ·  待确认 ${task.pendingApprovals}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun ThreadSettingsDialog(
+    task: TaskDto,
+    models: List<ModelOptionDto>,
+    saving: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (String, String) -> Unit,
+) {
+    var modelId by rememberSaveable(task.threadId) {
+        mutableStateOf(task.settings?.model ?: models.firstOrNull { it.isDefault }?.id ?: models.firstOrNull()?.id.orEmpty())
+    }
+    val model = models.firstOrNull { it.id == modelId }
+    var effort by rememberSaveable(task.threadId) {
+        mutableStateOf(model?.let { compatibleReasoningEffort(it, task.settings?.effort) }.orEmpty())
+    }
+    LaunchedEffect(modelId) {
+        model?.let { effort = compatibleReasoningEffort(it, effort).orEmpty() }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("模型与推理强度") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                SelectorButton(
+                    label = model?.displayName ?: "选择模型",
+                    options = models.map { it.id to it.displayName },
+                    onSelect = { modelId = it },
+                )
+                SelectorButton(
+                    label = effortLabel(effort),
+                    options = model?.supportedReasoningEfforts.orEmpty().map {
+                        it.reasoningEffort to effortLabel(it.reasoningEffort)
+                    },
+                    onSelect = { effort = it },
+                )
+                model?.description?.takeIf(String::isNotBlank)?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onSave(modelId, effort) }, enabled = !saving && modelId.isNotBlank() && effort.isNotBlank()) {
+                Text(if (saving) "正在保存" else "保存")
+            }
+        },
+        dismissButton = { OutlinedButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+@Composable
+internal fun NewTaskDialog(
+    enabled: Boolean,
+    groups: List<ProjectGroup>,
+    preferredProjectKey: String,
+    models: List<ModelOptionDto>,
+    creating: Boolean,
+    creationError: String? = null,
+    onDismiss: () -> Unit,
+    onCreate: (CreateTaskDraft) -> Unit,
+) {
+    val availableProjects = groups.filter { it.cwd != null }
+    var projectKey by rememberSaveable {
+        mutableStateOf(preferredProjectKey.takeIf { key -> availableProjects.any { it.key == key } } ?: availableProjects.firstOrNull()?.key.orEmpty())
+    }
+    var prompt by rememberSaveable { mutableStateOf("") }
+    var modelId by rememberSaveable {
+        mutableStateOf(models.firstOrNull { it.isDefault }?.id ?: models.firstOrNull()?.id.orEmpty())
+    }
+    val model = models.firstOrNull { it.id == modelId }
+    var effort by rememberSaveable { mutableStateOf(model?.let { compatibleReasoningEffort(it, null) }.orEmpty()) }
+    LaunchedEffect(modelId) { model?.let { effort = compatibleReasoningEffort(it, effort).orEmpty() } }
+    val project = availableProjects.firstOrNull { it.key == projectKey }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("新建 Codex 任务") },
+        text = {
+            if (!enabled) {
+                Text("当前 Codex Desktop 版本尚未开放远程新建任务。请先在电脑上新建并打开任务。")
+            } else {
+                Column(
+                    Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    SelectorButton(
+                        label = project?.name ?: "选择项目",
+                        options = availableProjects.map { it.key to it.name },
+                        onSelect = { projectKey = it },
+                    )
+                    androidx.compose.material3.OutlinedTextField(
+                        value = prompt,
+                        onValueChange = { prompt = it },
+                        label = { Text("任务指令") },
+                        minLines = 3,
+                        maxLines = 8,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    creationError?.let {
+                        Text(
+                            it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    SelectorButton(
+                        label = model?.displayName ?: "选择模型",
+                        options = models.map { it.id to it.displayName },
+                        onSelect = { modelId = it },
+                    )
+                    SelectorButton(
+                        label = effortLabel(effort),
+                        options = model?.supportedReasoningEfforts.orEmpty().map {
+                            it.reasoningEffort to effortLabel(it.reasoningEffort)
+                        },
+                        onSelect = { effort = it },
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = enabled && !creating && project?.cwd != null && prompt.isNotBlank() && modelId.isNotBlank() && effort.isNotBlank(),
+                onClick = {
+                    onCreate(CreateTaskDraft(projectKey, requireNotNull(project?.cwd), prompt.trim(), modelId, effort))
+                },
+            ) { Text(if (creating) "正在创建" else "创建") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("返回") } },
+    )
+}
+
+@Composable
+private fun SelectorButton(
+    label: String,
+    options: List<Pair<String, String>>,
+    onSelect: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = { expanded = true }, enabled = options.isNotEmpty(), modifier = Modifier.fillMaxWidth()) {
+            Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { (value, display) ->
+                DropdownMenuItem(
+                    text = { Text(display) },
+                    onClick = { expanded = false; onSelect(value) },
+                )
+            }
+        }
+    }
+}
+
+internal fun effortLabel(value: String?): String = when (value) {
+    "low" -> "Low"
+    "medium" -> "Medium"
+    "high" -> "High"
+    "xhigh" -> "XHigh"
+    "max" -> "Max"
+    "ultra" -> "Ultra"
+    null, "" -> "选择推理强度"
+    else -> value
+}

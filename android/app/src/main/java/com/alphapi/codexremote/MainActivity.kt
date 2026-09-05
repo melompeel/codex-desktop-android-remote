@@ -1,0 +1,599 @@
+package com.alphapi.codexremote
+
+import android.Manifest
+import android.os.Build
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.Difference
+import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.coroutines.launch
+
+class MainActivity : ComponentActivity() {
+    private val viewModel: RemoteViewModel by viewModels()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme(
+                colorScheme = lightColorScheme(
+                    primary = Color(0xFF136F63),
+                    onPrimary = Color.White,
+                    primaryContainer = Color(0xFFD8EEE9),
+                    secondary = Color(0xFF59645F),
+                    secondaryContainer = Color(0xFFE2E8E4),
+                    background = Color(0xFFF7F7F5),
+                    surface = Color.White,
+                    surfaceVariant = Color(0xFFE9ECE9),
+                    surfaceContainer = Color(0xFFF0F2EF),
+                    outline = Color(0xFF747A77),
+                ),
+            ) {
+                val permission = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission(),
+                ) { }
+                val state by viewModel.state.collectAsState()
+                LaunchedEffect(state.configured) {
+                    if (state.configured && Build.VERSION.SDK_INT >= 33) {
+                        permission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }
+                Surface(Modifier.fillMaxSize(), color = Color(0xFFF7F7F5)) {
+                    if (state.configured) RemoteHome(state, viewModel.repository)
+                    else PairingScreen(state, viewModel::pair)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PairingScreen(state: RemoteState, pair: (String, String, String) -> Unit) {
+    var url by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf(Build.MODEL) }
+    Column(
+        Modifier.fillMaxSize().imePadding().padding(24.dp),
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text("连接 Codex Bridge", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(20.dp))
+        OutlinedTextField(
+            url,
+            { url = it },
+            label = { Text("电脑地址") },
+            placeholder = { Text("http://192.168.x.x:8766") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(code, { code = it.filter(Char::isDigit).take(6) }, label = { Text("六位配对码") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(name, { name = it }, label = { Text("设备名称") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 12.dp)) }
+        Spacer(Modifier.height(20.dp))
+        Button(
+            onClick = { pair(url, code, name) },
+            enabled = !state.loading && url.isNotBlank() && code.length == 6 && name.isNotBlank(),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            if (state.loading) CircularProgressIndicator(Modifier.height(20.dp)) else Text("连接")
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
+    var tab by remember { mutableIntStateOf(0) }
+    var detailOpen by rememberSaveable { mutableStateOf(false) }
+    var confirmDisconnect by remember { mutableStateOf(false) }
+    var confirmPush by remember { mutableStateOf(false) }
+    var showNewTask by remember { mutableStateOf(false) }
+    var settingsThreadId by remember { mutableStateOf<String?>(null) }
+    var diffThreadId by remember { mutableStateOf<String?>(null) }
+    var selectedProjectKey by rememberSaveable { mutableStateOf(ProjectGroup.ALL_KEY) }
+    val groups = remember(state.tasks) { groupTasksByProject(state.tasks) }
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    val imeVisible = WindowInsets.isImeVisible
+    val selected = state.tasks.firstOrNull { it.threadId == state.selectedThreadId }
+    val canWrite = selected?.ownerAvailable == true && state.writeSupported &&
+        state.connected && state.ipcConnected
+    val selectedProjectName = when (selectedProjectKey) {
+        ProjectGroup.ALL_KEY -> "所有任务"
+        OPEN_TASKS_KEY -> "桌面已打开"
+        else -> groups.firstOrNull { it.key == selectedProjectKey }?.name ?: "所有任务"
+    }
+
+    LaunchedEffect(groups, selectedProjectKey) {
+        if (selectedProjectKey != ProjectGroup.ALL_KEY && selectedProjectKey != OPEN_TASKS_KEY &&
+            groups.none { it.key == selectedProjectKey }
+        ) selectedProjectKey = ProjectGroup.ALL_KEY
+    }
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        gesturesEnabled = tab == 0 && !detailOpen,
+        drawerContent = {
+            ProjectDrawerContent(
+                groups = groups,
+                selectedKey = selectedProjectKey,
+                onSelect = { key ->
+                    selectedProjectKey = key
+                    tab = 0
+                    detailOpen = false
+                    scope.launch { drawerState.close() }
+                },
+                onDisconnect = {
+                    scope.launch { drawerState.close() }
+                    confirmDisconnect = true
+                },
+            )
+        },
+    ) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    navigationIcon = {
+                        if (tab == 0 && detailOpen) {
+                            IconButton(onClick = { detailOpen = false }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回任务列表")
+                            }
+                        } else {
+                            IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                                Icon(Icons.Default.Menu, "打开项目导航")
+                            }
+                        }
+                    },
+                    title = {
+                        Column {
+                            Text(
+                                when {
+                                    tab == 0 && detailOpen && selected != null -> selected.title
+                                    tab == 0 -> selectedProjectName
+                                    else -> "待确认"
+                                },
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            val status = when {
+                                !state.writeSupported -> "桌面版本不兼容，仅查看"
+                                !state.connected -> "手机连接中断，正在重连"
+                                !state.ipcConnected -> "Codex Desktop 未连接"
+                                !state.compatibilityVerified -> "兼容模式 · 未验证版本"
+                                tab == 0 && detailOpen && selected?.ownerAvailable != true -> "历史记录"
+                                tab == 0 && detailOpen && selected != null -> statusLabel(selected.status)
+                                else -> "已连接"
+                            }
+                            val statusColor = when {
+                                !state.connected || !state.ipcConnected || !state.writeSupported -> MaterialTheme.colorScheme.error
+                                !state.compatibilityVerified -> Color(0xFF8A5A00)
+                                else -> Color(0xFF197344)
+                            }
+                            Text(status, style = MaterialTheme.typography.labelSmall, color = statusColor)
+                        }
+                    },
+                    actions = {
+                        if (tab == 0 && detailOpen && selected != null) {
+                            if (state.capabilities.diff) {
+                                IconButton(onClick = {
+                                    diffThreadId = selected.threadId
+                                    repository.loadDiff(selected.threadId)
+                                }) { Icon(Icons.Default.Difference, "查看完整 diff") }
+                            }
+                            IconButton(onClick = { confirmPush = true }, enabled = canWrite) {
+                                Icon(Icons.Default.CloudUpload, "请求提交并推送")
+                            }
+                        } else if (tab == 0) {
+                            IconButton(onClick = {
+                                repository.clearTaskCreationError()
+                                showNewTask = true
+                            }) { Icon(Icons.Default.Add, "新建任务") }
+                            IconButton(repository::refresh) { Icon(Icons.Default.Refresh, "刷新") }
+                        } else {
+                            IconButton(repository::refresh) { Icon(Icons.Default.Refresh, "刷新") }
+                        }
+                    },
+                )
+            },
+            bottomBar = {
+                if (!imeVisible) {
+                    NavigationBar {
+                        NavigationBarItem(selected = tab == 0, onClick = { tab = 0 }, icon = { Icon(Icons.AutoMirrored.Filled.List, "任务") }, label = { Text("任务") })
+                        NavigationBarItem(selected = tab == 1, onClick = { tab = 1; detailOpen = false }, icon = { if (state.approvals.isNotEmpty()) Icon(Icons.Default.Warning, "待确认") else Icon(Icons.Default.Check, "无待确认") }, label = { Text("审批 ${state.approvals.size}") })
+                    }
+                }
+            },
+        ) { padding ->
+            Column(Modifier.padding(padding)) {
+                state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) }
+                if (tab == 0) {
+                    TasksPane(
+                        state = state,
+                        repository = repository,
+                        groups = groups,
+                        selectedProjectKey = selectedProjectKey,
+                        detailOpen = detailOpen,
+                        onOpenDetail = { detailOpen = true },
+                        onOpenSettings = { settingsThreadId = it },
+                    )
+                } else {
+                    Box(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+                        ApprovalsPane(
+                            state.approvals,
+                            repository,
+                            state.writeSupported && state.connected && state.ipcConnected && !state.loading,
+                        )
+                    }
+                }
+            }
+        }
+    }
+    if (confirmDisconnect) {
+        AlertDialog(
+            onDismissRequest = { confirmDisconnect = false },
+            title = { Text("断开并清除配对？") },
+            text = { Text("本机保存的连接令牌会被删除，需要新配对码才能再次连接。") },
+            confirmButton = {
+                Button(onClick = {
+                    confirmDisconnect = false
+                    repository.disconnect()
+                }) { Text("断开") }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { confirmDisconnect = false }) { Text("取消") }
+            },
+        )
+    }
+    if (confirmPush && selected != null) {
+        AlertDialog(
+            onDismissRequest = { confirmPush = false },
+            title = { Text("请求 Codex 提交并推送？") },
+            text = { Text("Codex 会先检查改动和测试；发现失败、敏感信息或 upstream 问题时必须停止。") },
+            confirmButton = {
+                Button(onClick = {
+                    confirmPush = false
+                    repository.requestPush(selected.threadId)
+                }) { Text("确认请求") }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { confirmPush = false }) { Text("取消") }
+            },
+        )
+    }
+    if (showNewTask) {
+        NewTaskDialog(
+            enabled = state.capabilities.newTask,
+            groups = groups,
+            preferredProjectKey = selectedProjectKey,
+            models = state.models,
+            creating = state.creatingTask,
+            creationError = state.taskCreationError,
+            onDismiss = {
+                repository.clearTaskCreationError()
+                showNewTask = false
+            },
+            onCreate = { repository.createTask(it) { showNewTask = false; detailOpen = true } },
+        )
+    }
+    settingsThreadId?.let { threadId ->
+        state.tasks.firstOrNull { it.threadId == threadId }?.let { task ->
+            ThreadSettingsDialog(
+                task = task,
+                models = state.models,
+                saving = threadId in state.settingsThreads,
+                onDismiss = { settingsThreadId = null },
+                onSave = { model, effort -> repository.updateSettings(threadId, model, effort); settingsThreadId = null },
+            )
+        }
+    }
+    diffThreadId?.let { threadId ->
+        val task = state.tasks.firstOrNull { it.threadId == threadId }
+        DiffViewerDialog(
+            taskTitle = task?.title.orEmpty(),
+            rawDiff = state.diffByThread[threadId],
+            loading = threadId in state.loadingDiffThreads,
+            onDismiss = { diffThreadId = null },
+        )
+    }
+}
+
+@Composable
+private fun TasksPane(
+    state: RemoteState,
+    repository: RemoteRepository,
+    groups: List<ProjectGroup>,
+    selectedProjectKey: String,
+    detailOpen: Boolean,
+    onOpenDetail: () -> Unit,
+    onOpenSettings: (String) -> Unit,
+) {
+    val selected = state.tasks.firstOrNull { it.threadId == state.selectedThreadId }
+    val canWrite = selected?.ownerAvailable == true && state.writeSupported &&
+        state.connected && state.ipcConnected && !state.loading
+
+    if (!detailOpen || selected == null) {
+        Box(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+            ProjectTaskList(
+                groups = groups,
+                selectedKey = selectedProjectKey,
+                selectedThreadId = state.selectedThreadId,
+                onTaskClick = { task ->
+                    repository.select(task.threadId)
+                    onOpenDetail()
+                },
+            )
+        }
+        return
+    }
+
+    TaskConversationPane(
+        task = selected,
+        detail = state.taskDetail?.takeIf { it.threadId == selected.threadId },
+        canWrite = canWrite,
+        draft = state.draftsByThread[selected.threadId].orEmpty(),
+        deliveryMode = state.deliveryByThread[selected.threadId] ?: defaultDeliveryFor(selected.status),
+        queued = state.queueByThread[selected.threadId].orEmpty(),
+        queueReady = state.queueHashByThread.containsKey(selected.threadId),
+        attachments = state.attachmentsByThread[selected.threadId].orEmpty(),
+        models = state.models,
+        capabilities = state.capabilities,
+        sending = selected.threadId in state.sendingThreads,
+        stopping = selected.threadId in state.stoppingThreads,
+        onDraftChange = { repository.updateDraft(selected.threadId, it) },
+        onDeliveryChange = { repository.setDelivery(selected.threadId, it) },
+        onSend = { repository.sendDraft(selected.threadId) },
+        onStop = { repository.interrupt(selected.threadId) },
+        onCancelQueued = { repository.cancelQueuedMessage(selected.threadId, it) },
+        onOpenSettings = { onOpenSettings(selected.threadId) },
+        onAttachmentsSelected = { repository.addAttachments(selected.threadId, it) },
+        onRemoveAttachment = { repository.removeAttachment(selected.threadId, it) },
+    )
+}
+
+@Composable
+private fun ApprovalsPane(approvals: List<ApprovalDto>, repository: RemoteRepository, writeSupported: Boolean) {
+    var answering by remember { mutableStateOf<ApprovalDto?>(null) }
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxSize()) {
+        if (approvals.isEmpty()) item { Text("当前没有待确认操作", modifier = Modifier.padding(vertical = 24.dp)) }
+        items(approvals, key = { it.requestId }) { approval ->
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                shape = MaterialTheme.shapes.small,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Text(approval.method.substringAfterLast('/'), fontWeight = FontWeight.Medium)
+                    Text(approval.threadId.take(12), style = MaterialTheme.typography.labelSmall)
+                    Spacer(Modifier.height(10.dp))
+                    if (approval.method == "item/tool/requestUserInput") {
+                        Button(
+                            onClick = { answering = approval },
+                            enabled = writeSupported,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("回答") }
+                    } else {
+                        ApprovalDecisionActions(
+                            enabled = writeSupported,
+                            onAccept = { repository.respondApproval(approval.requestId, "accept") },
+                            onDecline = { repository.respondApproval(approval.requestId, "decline") },
+                            onCancel = { repository.respondApproval(approval.requestId, "cancel") },
+                        )
+                    }
+                }
+            }
+        }
+    }
+    answering?.let { request ->
+        UserInputDialog(
+            request = request,
+            onDismiss = { answering = null },
+            onSubmit = { answers ->
+                repository.respondUserInput(request.requestId, answers)
+                answering = null
+            },
+        )
+    }
+}
+
+@Composable
+internal fun ApprovalDecisionActions(
+    enabled: Boolean,
+    onAccept: () -> Unit,
+    onDecline: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(
+            onClick = onAccept,
+            enabled = enabled,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("仅本次允许") }
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(
+                onClick = onDecline,
+                enabled = enabled,
+                modifier = Modifier.weight(1f),
+            ) { Text("拒绝") }
+            TextButton(
+                onClick = onCancel,
+                enabled = enabled,
+                modifier = Modifier.weight(1f),
+            ) { Text("取消") }
+        }
+    }
+}
+
+private data class UserQuestion(
+    val id: String,
+    val header: String,
+    val question: String,
+    val options: List<String>,
+    val secret: Boolean,
+)
+
+@Composable
+private fun UserInputDialog(
+    request: ApprovalDto,
+    onDismiss: () -> Unit,
+    onSubmit: (Map<String, List<String>>) -> Unit,
+) {
+    val questions = remember(request.requestId) { request.userQuestions() }
+    var values by remember(request.requestId) { mutableStateOf<Map<String, String>>(emptyMap()) }
+    val complete = questions.isNotEmpty() && questions.none { it.secret } &&
+        questions.all { !values[it.id].isNullOrBlank() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Codex 需要你的回答") },
+        text = {
+            Column(
+                Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                questions.forEach { question ->
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(question.header, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                        Text(question.question, style = MaterialTheme.typography.bodyMedium)
+                        if (question.secret) {
+                            Text(
+                                "敏感回答不会通过局域网传输，请在桌面处理",
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        } else {
+                            question.options.forEach { option ->
+                                Row(
+                                    Modifier.fillMaxWidth().clickable { values = values + (question.id to option) },
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    RadioButton(selected = values[question.id] == option, onClick = { values = values + (question.id to option) })
+                                    Text(option)
+                                }
+                            }
+                            OutlinedTextField(
+                                value = values[question.id].orEmpty(),
+                                onValueChange = { values = values + (question.id to it) },
+                                label = { Text("其他或修改") },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+                }
+                if (questions.isEmpty()) Text("这条请求没有可解析的问题，请回到桌面处理。", color = MaterialTheme.colorScheme.error)
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSubmit(values.mapValues { listOf(it.value.trim()) }) },
+                enabled = complete,
+            ) { Text("提交回答") }
+        },
+        dismissButton = { OutlinedButton(onClick = onDismiss) { Text("返回") } },
+    )
+}
+
+internal fun statusLabel(status: String): String = when (status) {
+    "active", "inProgress" -> "进行中"
+    "idle", "completed" -> "空闲"
+    "failed" -> "失败"
+    else -> status
+}
+
+private fun ApprovalDto.userQuestions(): List<UserQuestion> {
+    val params = payload["params"] as? JsonObject ?: return emptyList()
+    val questions = params["questions"] as? JsonArray ?: return emptyList()
+    return questions.mapNotNull { element ->
+        val value = element as? JsonObject ?: return@mapNotNull null
+        val id = (value["id"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
+        val options = (value["options"] as? JsonArray)
+            ?.mapNotNull { option ->
+                ((option as? JsonObject)?.get("label") as? JsonPrimitive)?.contentOrNull
+            }
+            .orEmpty()
+        UserQuestion(
+            id = id,
+            header = (value["header"] as? JsonPrimitive)?.contentOrNull.orEmpty(),
+            question = (value["question"] as? JsonPrimitive)?.contentOrNull.orEmpty(),
+            options = options,
+            secret = (value["isSecret"] as? JsonPrimitive)?.booleanOrNull == true,
+        )
+    }
+}

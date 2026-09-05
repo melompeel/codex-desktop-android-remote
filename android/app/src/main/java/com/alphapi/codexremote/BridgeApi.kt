@@ -1,0 +1,295 @@
+package com.alphapi.codexremote
+
+import java.time.Instant
+import java.net.URLEncoder
+import java.util.UUID
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.put
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+
+class BridgeApi(
+    baseUrl: String,
+    private val token: String?,
+    private val client: OkHttpClient = OkHttpClient.Builder()
+        .pingInterval(20, TimeUnit.SECONDS)
+        .build(),
+) {
+    private val root = BridgeEndpoint.normalize(baseUrl)
+    private val json = Json { ignoreUnknownKeys = true }
+
+    suspend fun pair(code: String, name: String): PairResponse {
+        val body = json.encodeToString(
+            buildJsonObject {
+                put("code", code)
+                put("name", name)
+                put("kind", "android")
+            },
+        )
+        return execute("POST", "/v1/pair", body, authenticated = false) { response ->
+            json.decodeFromString<PairResponse>(response.body!!.string())
+        }
+    }
+
+    suspend fun tasks(): List<TaskDto> =
+        execute("GET", "/v1/tasks") { response ->
+            json.decodeFromString<TasksResponse>(response.body!!.string()).tasks
+        }
+
+    suspend fun health(): HealthDto =
+        execute("GET", "/v1/health", authenticated = false) { response ->
+            json.decodeFromString<HealthDto>(response.body!!.string())
+        }
+
+    suspend fun follow(threadId: String) {
+        execute<Unit>("POST", "/v1/tasks/$threadId/follow", "{}") { }
+    }
+
+    suspend fun taskDetail(threadId: String): TaskDetailDto =
+        execute("GET", "/v1/tasks/$threadId") { response ->
+            json.decodeFromString<TaskDetailResponse>(response.body!!.string()).task
+        }
+
+    suspend fun approvals(): List<ApprovalDto> =
+        execute("GET", "/v1/approvals") { response ->
+            json.decodeFromString<ApprovalsResponse>(response.body!!.string()).approvals
+        }
+
+    suspend fun capabilities(): RemoteCapabilitiesDto =
+        execute("GET", "/v1/capabilities") { response ->
+            val raw = response.body!!.string()
+            val element = json.parseToJsonElement(raw)
+            val wrapped = (element as? JsonObject)?.get("capabilities")
+            if (wrapped != null) json.decodeFromJsonElement(wrapped)
+            else json.decodeFromString(raw)
+        }
+
+    suspend fun models(): List<ModelOptionDto> =
+        execute("GET", "/v1/models") { response ->
+            json.decodeFromString<ModelsResponse>(response.body!!.string()).values()
+        }
+
+    suspend fun queue(threadId: String): QueueResponse =
+        execute("GET", "/v1/tasks/$threadId/queue") { response ->
+            json.decodeFromString(response.body!!.string())
+        }
+
+    suspend fun cancelQueuedMessage(threadId: String, messageId: String, expectedQueueHash: String) {
+        val idempotencyKey = UUID.randomUUID().toString()
+        val path = queueDeletePath(threadId, messageId, expectedQueueHash, idempotencyKey)
+        execute<Unit>("DELETE", path, "{}") { }
+    }
+
+    suspend fun diff(threadId: String): TaskDiffDto =
+        execute("GET", "/v1/tasks/$threadId/diff") { response ->
+            json.decodeFromString<DiffResponse>(response.body!!.string()).diff
+        }
+
+    suspend fun revokeSelf() {
+        execute<Unit>("DELETE", "/v1/devices/self", "{}") { }
+    }
+
+    suspend fun sendMessage(
+        threadId: String,
+        text: String,
+        delivery: DeliveryMode? = null,
+        expectedTurnId: String? = null,
+        expectedQueueHash: String? = null,
+        attachmentIds: List<String> = emptyList(),
+    ) {
+        val body = json.encodeToString(buildJsonObject {
+            put("text", text)
+            delivery?.let { put("delivery", it.wireValue) }
+            expectedTurnId?.let { put("expectedTurnId", it) }
+            expectedQueueHash?.let { put("expectedQueueHash", it) }
+            put("idempotencyKey", UUID.randomUUID().toString())
+            if (attachmentIds.isNotEmpty()) {
+                put("attachmentIds", buildJsonArray {
+                    attachmentIds.forEach { add(JsonPrimitive(it)) }
+                })
+            }
+        })
+        execute<Unit>("POST", "/v1/tasks/$threadId/messages", body) { }
+    }
+
+    suspend fun updateSettings(
+        threadId: String,
+        model: String,
+        reasoningEffort: String,
+    ) {
+        val body = json.encodeToString(buildJsonObject {
+            put("model", model)
+            put("effort", reasoningEffort)
+        })
+        execute<Unit>("PATCH", "/v1/tasks/$threadId/settings", body) { }
+    }
+
+    suspend fun createTask(draft: CreateTaskDraft): CreateTaskResponse {
+        val body = json.encodeToString(buildJsonObject {
+            put("cwd", draft.cwd)
+            put("prompt", draft.prompt)
+            draft.model?.let { put("model", it) }
+            draft.reasoningEffort?.let { put("reasoningEffort", it) }
+            put("idempotencyKey", UUID.randomUUID().toString())
+        })
+        return execute("POST", "/v1/tasks", body) { response ->
+            json.decodeFromString(response.body!!.string())
+        }
+    }
+
+    suspend fun uploadAttachment(
+        name: String,
+        mimeType: String,
+        bytes: ByteArray,
+    ): UploadedAttachmentDto {
+        val idempotencyKey = UUID.randomUUID().toString()
+        val path = attachmentUploadPath(name, mimeType, idempotencyKey)
+        return executeBytes(
+            method = "POST",
+            path = path,
+            body = bytes,
+            mediaType = mimeType.lowercase(),
+        ) { response ->
+            json.decodeFromString<UploadAttachmentResponse>(response.body!!.string()).attachment
+        }
+    }
+
+    suspend fun deleteAttachment(attachmentId: String) {
+        execute<Unit>("DELETE", "/v1/attachments/$attachmentId", "{}") { }
+    }
+
+    suspend fun interrupt(threadId: String) {
+        execute<Unit>("POST", "/v1/tasks/$threadId/interrupt", "{}") { }
+    }
+
+    suspend fun requestPush(threadId: String) {
+        execute<Unit>("POST", "/v1/tasks/$threadId/request-push", "{\"confirmed\":true}") { }
+    }
+
+    suspend fun respondApproval(requestId: String, decision: String) {
+        val body = json.encodeToString(buildJsonObject { put("decision", decision) })
+        execute<Unit>("POST", "/v1/approvals/$requestId", body) { }
+    }
+
+    suspend fun respondUserInput(requestId: String, answers: Map<String, List<String>>) {
+        val response = buildJsonObject {
+            put("answers", buildJsonObject {
+                answers.forEach { (questionId, values) ->
+                    put(questionId, buildJsonObject {
+                        put("answers", buildJsonArray {
+                            values.forEach { add(JsonPrimitive(it)) }
+                        })
+                    })
+                }
+            })
+        }
+        val body = json.encodeToString(
+            JsonObject.serializer(),
+            buildJsonObject { put("response", response) },
+        )
+        execute<Unit>("POST", "/v1/user-input/$requestId", body) { }
+    }
+
+    fun stream(onEvent: (BridgeEvent) -> Unit, onConnected: (Boolean) -> Unit): WebSocket {
+        val path = "/v1/stream"
+        val request = signedBuilder("GET", path, ByteArray(0))
+            .url(root.replaceFirst("http://", "ws://").replaceFirst("https://", "wss://") + path)
+            .build()
+        return client.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) = onConnected(true)
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                runCatching { json.decodeFromString<BridgeEvent>(text) }.onSuccess(onEvent)
+            }
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = onConnected(false)
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = onConnected(false)
+        })
+    }
+
+    private suspend fun <T> execute(
+        method: String,
+        path: String,
+        body: String = "",
+        authenticated: Boolean = true,
+        read: (Response) -> T,
+    ): T = executeBytes(
+        method = method,
+        path = path,
+        body = body.toByteArray(Charsets.UTF_8),
+        mediaType = "application/json",
+        authenticated = authenticated,
+        read = read,
+    )
+
+    private suspend fun <T> executeBytes(
+        method: String,
+        path: String,
+        body: ByteArray,
+        mediaType: String,
+        authenticated: Boolean = true,
+        headers: Map<String, String> = emptyMap(),
+        read: (Response) -> T,
+    ): T = withContext(Dispatchers.IO) {
+        val bytes = body
+        val builder = if (authenticated) signedBuilder(method, path, bytes) else Request.Builder()
+        builder.url(root + path)
+        headers.forEach(builder::header)
+        if (method != "GET") {
+            builder.method(method, bytes.toRequestBody(mediaType.toMediaType()))
+        }
+        client.newCall(builder.build()).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IllegalStateException("Bridge ${response.code}: ${response.body?.string().orEmpty()}")
+            }
+            read(response)
+        }
+    }
+
+    private fun signedBuilder(method: String, path: String, body: ByteArray): Request.Builder {
+        val secret = requireNotNull(token) { "Device is not paired" }
+        val headers = RequestSigner.sign(
+            secret,
+            method,
+            path,
+            body,
+            UUID.randomUUID().toString(),
+            Instant.now().epochSecond,
+        )
+        return Request.Builder()
+            .header("Authorization", "Bearer $secret")
+            .header("X-Request-Id", headers.requestId)
+            .header("X-Timestamp", headers.timestamp)
+            .header("X-Signature", headers.signature)
+    }
+
+}
+
+internal fun attachmentUploadPath(name: String, mimeType: String, idempotencyKey: String): String =
+    "/v1/attachments?name=${encodeQuery(name)}" +
+        "&mimeType=${encodeQuery(mimeType.lowercase())}&idempotencyKey=${encodeQuery(idempotencyKey)}"
+
+internal fun queueDeletePath(
+    threadId: String,
+    messageId: String,
+    expectedQueueHash: String,
+    idempotencyKey: String,
+): String = "/v1/tasks/${encodePathSegment(threadId)}/queue/${encodePathSegment(messageId)}" +
+    "?expectedQueueHash=${encodeQuery(expectedQueueHash)}&idempotencyKey=${encodeQuery(idempotencyKey)}"
+
+private fun encodeQuery(value: String): String =
+    URLEncoder.encode(value, Charsets.UTF_8.name()).replace("+", "%20")
+
+private fun encodePathSegment(value: String): String = encodeQuery(value)

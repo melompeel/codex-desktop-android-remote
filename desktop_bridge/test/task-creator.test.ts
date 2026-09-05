@@ -1,0 +1,160 @@
+import { describe, expect, it, vi } from "vitest";
+
+import {
+  AppServerTaskCreator,
+  type AppServerSession,
+} from "../src/catalog/task-creator.js";
+
+describe("AppServerTaskCreator", () => {
+  it("materializes, rolls back, unsubscribes, and activates a workspace task", async () => {
+    const session = new FakeSession();
+    const activate = vi.fn(async () => undefined);
+    const creator = new AppServerTaskCreator(async () => session, activate);
+
+    const result = await creator.materialize({
+      cwd: "C:\\repo",
+      model: "gpt-test",
+      effort: "high",
+    });
+
+    expect(result).toEqual({
+      threadId: THREAD_ID,
+      projectId: "project-1",
+      permissionProfile: ":workspace",
+    });
+    expect(session.call("thread/start")?.params).toMatchObject({
+      cwd: "C:\\repo",
+      projectId: "project-1",
+      model: "gpt-test",
+      permissions: ":workspace",
+      approvalPolicy: "on-request",
+      ephemeral: false,
+    });
+    expect(session.call("turn/start")?.params).toMatchObject({
+      threadId: THREAD_ID,
+      effort: "high",
+      permissions: ":read-only",
+      approvalPolicy: "on-request",
+    });
+    expect(session.calls.map((call) => call.method)).toEqual([
+      "project/list",
+      "permissionProfile/list",
+      "thread/start",
+      "turn/start",
+      "thread/revert",
+      "thread/read",
+      "thread/unsubscribe",
+    ]);
+    expect(activate).toHaveBeenCalledWith(
+      expect.stringMatching(new RegExp(`^codex://threads/${THREAD_ID}\\?follow=`)),
+    );
+    expect(session.disposed).toBe(true);
+  });
+
+  it("fails closed when the workspace permission profile is unavailable", async () => {
+    const session = new FakeSession({ workspaceAllowed: false });
+    const creator = new AppServerTaskCreator(async () => session, async () => undefined);
+
+    await expect(creator.materialize({ cwd: "C:\\repo" })).rejects.toThrow(
+      "task-permission-profile-unavailable::workspace",
+    );
+    expect(session.call("thread/start")).toBeUndefined();
+    expect(session.disposed).toBe(true);
+  });
+
+  it("deletes a partially created task when bootstrap completion fails", async () => {
+    const session = new FakeSession({ turnStatus: "failed" });
+    const creator = new AppServerTaskCreator(async () => session, async () => undefined);
+
+    await expect(creator.materialize({ cwd: "C:\\repo" })).rejects.toThrow(
+      "task-bootstrap-failed",
+    );
+    expect(session.call("thread/delete")?.params).toEqual({ threadId: THREAD_ID });
+    expect(session.disposed).toBe(true);
+  });
+
+  it("refuses handoff when the bootstrap turn remains after revert", async () => {
+    const session = new FakeSession({ retainedBootstrap: true });
+    const activate = vi.fn(async () => undefined);
+    const creator = new AppServerTaskCreator(async () => session, activate);
+
+    await expect(creator.materialize({ cwd: "C:\\repo" })).rejects.toThrow(
+      "task-bootstrap-rollback-unverified",
+    );
+    expect(activate).not.toHaveBeenCalled();
+    expect(session.call("thread/delete")?.params).toEqual({ threadId: THREAD_ID });
+  });
+
+  it("allows a retry when opening the helper app-server fails", async () => {
+    const session = new FakeSession();
+    let attempts = 0;
+    const creator = new AppServerTaskCreator(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("helper-start-failed");
+      return session;
+    }, async () => undefined);
+
+    await expect(creator.materialize({ cwd: "C:\\repo" })).rejects.toThrow(
+      "helper-start-failed",
+    );
+    await expect(creator.materialize({ cwd: "C:\\repo" })).resolves.toMatchObject({
+      threadId: THREAD_ID,
+    });
+  });
+});
+
+const THREAD_ID = "01a0705b-c5c1-7d00-95bc-efd02a96789b";
+
+class FakeSession implements AppServerSession {
+  readonly calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  disposed = false;
+
+  constructor(private readonly options: {
+    workspaceAllowed?: boolean;
+    turnStatus?: string;
+    retainedBootstrap?: boolean;
+  } = {}) {}
+
+  async request(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    this.calls.push({ method, params });
+    if (method === "project/list") {
+      return {
+        data: [{ id: "project-1", roots: [{ path: "C:\\repo\\" }] }],
+      };
+    }
+    if (method === "permissionProfile/list") {
+      return {
+        data: [
+          { id: ":read-only", allowed: true },
+          { id: ":workspace", allowed: this.options.workspaceAllowed !== false },
+        ],
+      };
+    }
+    if (method === "thread/start") return { thread: { id: THREAD_ID } };
+    if (method === "turn/start") return { turn: { id: "turn-bootstrap" } };
+    if (method === "thread/read") {
+      return {
+        thread: {
+          id: THREAD_ID,
+          turns: this.options.retainedBootstrap ? [{ id: "turn-bootstrap" }] : [],
+        },
+      };
+    }
+    return {};
+  }
+
+  async waitForNotification(): Promise<Record<string, unknown>> {
+    return {
+      threadId: THREAD_ID,
+      turn: { id: "turn-bootstrap", status: this.options.turnStatus ?? "completed" },
+    };
+  }
+
+  dispose(): void {
+    this.disposed = true;
+  }
+
+  call(method: string) {
+    return this.calls.find((call) => call.method === method);
+  }
+}

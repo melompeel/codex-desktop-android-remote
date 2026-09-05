@@ -1,0 +1,686 @@
+package com.alphapi.codexremote
+
+import android.net.Uri
+import android.content.Intent
+import android.text.method.LinkMovementMethod
+import android.util.TypedValue
+import android.widget.ImageView
+import android.widget.TextView
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Checklist
+import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import io.noties.markwon.Markwon
+import io.noties.markwon.AbstractMarkwonPlugin
+import io.noties.markwon.MarkwonConfiguration
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
+
+@Composable
+internal fun TaskConversationPane(
+    task: TaskDto,
+    detail: TaskDetailDto?,
+    canWrite: Boolean,
+    draft: String,
+    deliveryMode: DeliveryMode,
+    queued: List<QueuedFollowUpDto>,
+    queueReady: Boolean,
+    attachments: List<ComposerAttachment>,
+    models: List<ModelOptionDto>,
+    capabilities: RemoteCapabilitiesDto,
+    sending: Boolean,
+    stopping: Boolean,
+    onDraftChange: (String) -> Unit,
+    onDeliveryChange: (DeliveryMode) -> Unit,
+    onSend: () -> Unit,
+    onStop: () -> Unit,
+    onCancelQueued: (String) -> Unit,
+    onOpenSettings: () -> Unit,
+    onAttachmentsSelected: (List<Uri>) -> Unit,
+    onRemoveAttachment: (String) -> Unit,
+) {
+    val imagePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(5),
+        onAttachmentsSelected,
+    )
+    val filePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments(),
+        onAttachmentsSelected,
+    )
+    val active = task.status == "active" || task.status == "inProgress"
+    val effectiveDelivery = if (active) {
+        deliveryMode.takeIf { it == DeliveryMode.STEER || it == DeliveryMode.QUEUE } ?: DeliveryMode.STEER
+    } else DeliveryMode.START
+
+    Column(Modifier.fillMaxSize()) {
+        if (!task.ownerAvailable) {
+            ConnectionBanner("桌面未打开此任务，当前只能查看历史记录")
+        }
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            when {
+                detail == null -> CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp))
+                else -> ConversationTimeline(detail)
+            }
+        }
+        if (queued.isNotEmpty()) {
+            QueuedFollowUps(queued, canWrite, onCancelQueued)
+        }
+        MessageComposer(
+            value = draft,
+            onValueChange = onDraftChange,
+            deliveryMode = effectiveDelivery,
+            active = active,
+            queueSupported = capabilities.queue && capabilities.explicitDelivery,
+            attachmentsSupported = capabilities.attachments.enabled,
+            attachments = attachments,
+            canSend = canWrite && !sending && (draft.isNotBlank() || attachments.isNotEmpty()) &&
+                attachments.none { it.uploadState != AttachmentUploadState.READY } &&
+                (effectiveDelivery != DeliveryMode.STEER || task.activeTurnId != null || !capabilities.explicitDelivery) &&
+                (effectiveDelivery != DeliveryMode.QUEUE || (attachments.isEmpty() && queueReady)),
+            sending = sending,
+            stopping = stopping,
+            canStop = canWrite && active,
+            modelLabel = models.firstOrNull { it.id == task.settings?.model }?.displayName ?: task.settings?.model,
+            reasoningEffort = task.settings?.effort,
+            settingsEnabled = capabilities.threadSettings && models.isNotEmpty(),
+            onDeliveryChange = onDeliveryChange,
+            onSend = onSend,
+            onStop = onStop,
+            onOpenSettings = onOpenSettings,
+            onPickImages = {
+                imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            },
+            onPickFiles = { filePicker.launch(arrayOf("*/*")) },
+            onRemoveAttachment = onRemoveAttachment,
+        )
+    }
+}
+
+@Composable
+private fun QueuedFollowUps(
+    queued: List<QueuedFollowUpDto>,
+    canWrite: Boolean,
+    onCancel: (String) -> Unit,
+) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(start = 12.dp, top = 8.dp, bottom = 6.dp)) {
+            Text("已排队 ${queued.size}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            queued.forEach { message ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        message.text,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    IconButton(onClick = { onCancel(message.id) }, enabled = canWrite, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Default.Close, "取消排队消息", modifier = Modifier.size(17.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConnectionBanner(text: String) {
+    Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+}
+
+@Composable
+private fun ConversationTimeline(detail: TaskDetailDto) {
+    val context = LocalContext.current
+    val markwon = remember(context) {
+        Markwon.builder(context)
+            .usePlugin(object : AbstractMarkwonPlugin() {
+                override fun configureConfiguration(builder: MarkwonConfiguration.Builder) {
+                    builder.linkResolver { view, link ->
+                        if (!isAllowedExternalLink(link)) return@linkResolver
+                        runCatching {
+                            val intent = Intent.createChooser(
+                                Intent(Intent.ACTION_VIEW, Uri.parse(link)),
+                                "打开链接",
+                            )
+                            view.context.startActivity(intent)
+                        }
+                    }
+                }
+            })
+            .build()
+    }
+    val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+    var positionedInitially by remember(detail.threadId) { mutableStateOf(false) }
+    val showJumpToLatest by remember {
+        derivedStateOf {
+            val total = listState.layoutInfo.totalItemsCount
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            total > 2 && lastVisible < total - 2
+        }
+    }
+
+    LaunchedEffect(detail.threadId, detail.revision, detail.items.size) {
+        yield()
+        val total = listState.layoutInfo.totalItemsCount
+        if (total == 0) return@LaunchedEffect
+        val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+        val nearLatest = lastVisible >= total - 4
+        if (!positionedInitially || nearLatest) {
+            listState.animateScrollToItem(total - 1)
+        }
+        positionedInitially = true
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 16.dp),
+        ) {
+            if (detail.items.isEmpty() && detail.status != "active") {
+                item("empty") {
+                    Text(
+                        "这个任务还没有可显示的对话",
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 40.dp),
+                        color = Color(0xFF777772),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+            itemsIndexed(
+                detail.items,
+                key = { _, item -> "${item.turnId}:${item.id}" },
+            ) { index, item ->
+                val startsTurn = index == 0 || detail.items[index - 1].turnId != item.turnId
+                Spacer(Modifier.height(if (startsTurn) 18.dp else 8.dp))
+                ConversationEntry(item, markwon)
+            }
+            if (detail.status == "active") {
+                item("working") {
+                    WorkingIndicator(Modifier.padding(top = 14.dp, bottom = 10.dp))
+                }
+            }
+        }
+        if (showJumpToLatest) {
+            SmallFloatingActionButton(
+                onClick = {
+                    val last = listState.layoutInfo.totalItemsCount - 1
+                    if (last >= 0) {
+                        coroutineScope.launch { listState.animateScrollToItem(last) }
+                    }
+                },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
+                containerColor = MaterialTheme.colorScheme.surface,
+            ) {
+                Icon(Icons.Default.KeyboardArrowDown, "回到最新消息")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConversationEntry(item: TimelineItemDto, markwon: Markwon) {
+    when (item.kind) {
+        "user" -> UserMessage(item.text)
+        "assistant" -> AssistantMessage(item.text, markwon)
+        "plan" -> PlanMessage(item.text, markwon)
+        "command", "file" -> ActivityDisclosure(item)
+        else -> ProgressMessage(item.text, markwon)
+    }
+}
+
+@Composable
+private fun UserMessage(text: String) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        Surface(
+            color = Color(0xFFE9E9E5),
+            shape = MaterialTheme.shapes.small,
+            modifier = Modifier.widthIn(max = 344.dp),
+        ) {
+            SelectionContainer {
+                Text(
+                    text,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    style = MaterialTheme.typography.bodyLarge,
+                    lineHeight = 24.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AssistantMessage(text: String, markwon: Markwon) {
+    val clipboard = LocalClipboardManager.current
+    Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
+        Text(
+            "Codex",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(bottom = 4.dp),
+        )
+        MarkdownBody(text, markwon)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            IconButton(
+                onClick = { clipboard.setText(AnnotatedString(text)) },
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(Icons.Default.ContentCopy, "复制回复", modifier = Modifier.size(17.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlanMessage(text: String, markwon: Markwon) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Checklist, null, modifier = Modifier.size(17.dp), tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(7.dp))
+            Text("计划", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+        }
+        Spacer(Modifier.height(5.dp))
+        MarkdownBody(text, markwon, textSizeSp = 16f)
+    }
+}
+
+@Composable
+private fun ProgressMessage(text: String, markwon: Markwon) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
+        Box(
+            Modifier.padding(top = 8.dp).size(7.dp).background(
+                MaterialTheme.colorScheme.primary,
+                MaterialTheme.shapes.small,
+            ),
+        )
+        Spacer(Modifier.width(10.dp))
+        Box(Modifier.weight(1f)) {
+            MarkdownBody(text, markwon, textSizeSp = 15f, textColor = Color(0xFF454542))
+        }
+    }
+}
+
+@Composable
+private fun MarkdownBody(
+    markdown: String,
+    markwon: Markwon,
+    textSizeSp: Float = 17f,
+    textColor: Color = Color(0xFF232321),
+) {
+    val segments = remember(markdown) { splitMarkdownSegments(markdown) }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        segments.forEachIndexed { index, segment ->
+            when (segment) {
+                is MarkdownSegment.Prose -> MarkdownProse(
+                    markdown = segment.markdown,
+                    markwon = markwon,
+                    textSizeSp = textSizeSp,
+                    textColor = textColor,
+                    key = index,
+                )
+                is MarkdownSegment.Code -> CodeBlock(segment.code, segment.language)
+            }
+        }
+    }
+}
+
+@Composable
+private fun MarkdownProse(
+    markdown: String,
+    markwon: Markwon,
+    textSizeSp: Float,
+    textColor: Color,
+    key: Int,
+) {
+    val linkColor = MaterialTheme.colorScheme.primary.toArgb()
+    AndroidView(
+        factory = { viewContext ->
+            TextView(viewContext).apply {
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, textSizeSp)
+                setLineSpacing(0f, 1.2f)
+                includeFontPadding = false
+                setTextIsSelectable(true)
+                movementMethod = LinkMovementMethod.getInstance()
+            }
+        },
+        update = { view ->
+            view.setTextSize(TypedValue.COMPLEX_UNIT_SP, textSizeSp)
+            view.setTextColor(textColor.toArgb())
+            view.setLinkTextColor(linkColor)
+            view.tag = key
+            markwon.setMarkdown(view, markdown)
+        },
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+@Composable
+private fun CodeBlock(code: String, language: String? = null) {
+    val clipboard = LocalClipboardManager.current
+    Column(
+        Modifier.fillMaxWidth().background(Color(0xFFF0F0ED), MaterialTheme.shapes.small),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                language ?: "code",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFF666661),
+            )
+            IconButton(
+                onClick = { clipboard.setText(AnnotatedString(code)) },
+                modifier = Modifier.size(34.dp),
+            ) { Icon(Icons.Default.ContentCopy, "复制代码", modifier = Modifier.size(16.dp)) }
+        }
+        SelectionContainer {
+            Text(
+                code,
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 12.dp, end = 12.dp, bottom = 11.dp),
+                fontFamily = FontFamily.Monospace,
+                fontSize = 13.sp,
+                lineHeight = 19.sp,
+                color = Color(0xFF272725),
+                softWrap = false,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ActivityDisclosure(item: TimelineItemDto) {
+    val presentation = remember(item.text, item.kind) { presentActivity(item) }
+    var expanded by rememberSaveable(item.id) { mutableStateOf(false) }
+    val icon = if (item.kind == "command") Icons.Default.Terminal else Icons.Default.Description
+    Surface(
+        color = Color(0xFFF0F0ED),
+        shape = MaterialTheme.shapes.small,
+        modifier = Modifier.fillMaxWidth().animateContentSize(),
+    ) {
+        Column {
+            Row(
+                Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(icon, null, modifier = Modifier.size(18.dp), tint = Color(0xFF555550))
+                Spacer(Modifier.width(9.dp))
+                Text(
+                    presentation.title,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                item.status?.takeIf { it == "active" || it == "inProgress" || it == "failed" }?.let {
+                    Text(statusLabel(it), style = MaterialTheme.typography.labelSmall, color = Color(0xFF6B6B66))
+                }
+                IconButton(onClick = { expanded = !expanded }, modifier = Modifier.size(36.dp)) {
+                    Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, if (expanded) "收起" else "展开")
+                }
+            }
+            if (expanded && presentation.detail.isNotBlank()) {
+                HorizontalDivider(color = Color(0xFFDDDDD8))
+                CodeBlock(presentation.detail, if (item.kind == "command") "terminal" else "files")
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorkingIndicator(modifier: Modifier = Modifier) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+        Spacer(Modifier.width(9.dp))
+        Text("Codex 正在处理", style = MaterialTheme.typography.bodySmall, color = Color(0xFF676762))
+    }
+}
+
+@Composable
+private fun MessageComposer(
+    value: String,
+    onValueChange: (String) -> Unit,
+    deliveryMode: DeliveryMode,
+    active: Boolean,
+    queueSupported: Boolean,
+    attachmentsSupported: Boolean,
+    attachments: List<ComposerAttachment>,
+    canSend: Boolean,
+    sending: Boolean,
+    stopping: Boolean,
+    canStop: Boolean,
+    modelLabel: String?,
+    reasoningEffort: String?,
+    settingsEnabled: Boolean,
+    onDeliveryChange: (DeliveryMode) -> Unit,
+    onSend: () -> Unit,
+    onStop: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onPickImages: () -> Unit,
+    onPickFiles: () -> Unit,
+    onRemoveAttachment: (String) -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 4.dp,
+        modifier = Modifier.fillMaxWidth().imePadding(),
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .testTag("messageComposerContent")
+                .padding(horizontal = 8.dp, vertical = 7.dp),
+        ) {
+            if (active && queueSupported) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = deliveryMode == DeliveryMode.STEER,
+                        onClick = { onDeliveryChange(DeliveryMode.STEER) },
+                        label = { Text("现在补充") },
+                    )
+                    FilterChip(
+                        selected = deliveryMode == DeliveryMode.QUEUE,
+                        onClick = { onDeliveryChange(DeliveryMode.QUEUE) },
+                        label = { Text("排队") },
+                    )
+                }
+            } else {
+                Text(
+                    if (active) "发送到当前轮次" else "开始新一轮",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                )
+            }
+            if (attachments.isNotEmpty()) {
+                AttachmentPreviewRow(attachments, onRemoveAttachment)
+            }
+            OutlinedTextField(
+                value = value,
+                onValueChange = onValueChange,
+                placeholder = { Text("给 Codex 发消息") },
+                minLines = 1,
+                maxLines = 5,
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.small,
+            )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                if (attachmentsSupported) {
+                    IconButton(onClick = onPickImages, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.AddPhotoAlternate, "选择图片", modifier = Modifier.size(20.dp))
+                    }
+                    IconButton(onClick = onPickFiles, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.AttachFile, "选择文件", modifier = Modifier.size(20.dp))
+                    }
+                }
+                if (settingsEnabled) {
+                    AssistChip(
+                        onClick = onOpenSettings,
+                        label = {
+                            Text(
+                                listOfNotNull(modelLabel, reasoningEffort?.let(::effortLabel)).joinToString(" ").ifBlank { "模型" },
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                        leadingIcon = { Icon(Icons.Default.Tune, null, modifier = Modifier.size(17.dp)) },
+                        modifier = Modifier.weight(1f, fill = false).widthIn(max = 220.dp),
+                    )
+                } else {
+                    Spacer(Modifier.weight(1f))
+                }
+                if (settingsEnabled) Spacer(Modifier.weight(1f))
+                if (canStop) {
+                    IconButton(onClick = onStop, enabled = !stopping, modifier = Modifier.size(44.dp)) {
+                        if (stopping) CircularProgressIndicator(Modifier.size(19.dp), strokeWidth = 2.dp)
+                        else Icon(Icons.Default.Stop, "停止当前任务")
+                    }
+                }
+                IconButton(onClick = onSend, enabled = canSend, modifier = Modifier.size(44.dp)) {
+                    if (sending && value.isNotBlank()) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    else Icon(Icons.AutoMirrored.Filled.Send, "发送")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AttachmentPreviewRow(
+    attachments: List<ComposerAttachment>,
+    onRemove: (String) -> Unit,
+) {
+    LazyRow(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(attachments, key = { it.localId }) { attachment ->
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                shape = MaterialTheme.shapes.small,
+                modifier = Modifier.widthIn(min = 120.dp, max = 210.dp),
+            ) {
+                Row(Modifier.padding(start = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (attachment.mimeType.startsWith("image/")) {
+                        AndroidView(
+                            factory = { context -> ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP } },
+                            update = { it.setImageURI(Uri.parse(attachment.uri)) },
+                            modifier = Modifier.size(38.dp),
+                        )
+                    } else {
+                        Icon(Icons.Default.AttachFile, null, modifier = Modifier.size(24.dp))
+                    }
+                    Spacer(Modifier.width(7.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(attachment.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
+                        Text(
+                            when (attachment.uploadState) {
+                                AttachmentUploadState.UPLOADING -> "正在上传"
+                                AttachmentUploadState.READY -> formatBytes(attachment.size)
+                                AttachmentUploadState.FAILED -> attachment.error ?: "上传失败"
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (attachment.uploadState == AttachmentUploadState.FAILED) {
+                                MaterialTheme.colorScheme.error
+                            } else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(onClick = { onRemove(attachment.localId) }, modifier = Modifier.size(34.dp)) {
+                        Icon(Icons.Default.Close, "移除附件", modifier = Modifier.size(16.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun formatBytes(size: Long): String = when {
+    size >= 1024 * 1024 -> "%.1f MB".format(size / (1024.0 * 1024.0))
+    size >= 1024 -> "%.1f KB".format(size / 1024.0)
+    else -> "$size B"
+}
