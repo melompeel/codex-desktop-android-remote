@@ -1,6 +1,6 @@
 # Codex Desktop Remote for Android
 
-这是一个适用于 Windows ChatGPT/Codex Desktop 的 Android 远程控制器。手机端使用原生会话界面，不是终端截图，也不是 `codex-cli` 的远程终端。
+这是一个适用于 Windows ChatGPT/Codex Desktop 的 Android 远程控制器。
 
 > 本项目与 OpenAI 无关联，也不是官方产品。它依赖 Codex Desktop 的私有本地 IPC；桌面版升级后可能需要更新协议适配。
 
