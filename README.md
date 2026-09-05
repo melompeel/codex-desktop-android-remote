@@ -113,19 +113,6 @@ cd "<仓库目录>\desktop_bridge"
 .\remove-autostart.ps1
 ```
 
-## 七、复制到另一台电脑
-
-可以复制使用，但新电脑需要重新完成以下操作：
-
-1. 安装并登录 Codex Desktop。
-2. 安装 Node.js 22 和 Tailscale。
-3. 复制整个 `desktop_bridge` 目录。
-4. 双击 `launch-codex-remote.cmd`。首次运行会自动安装 Bridge 依赖。
-5. 在新手机或原手机上填写新电脑的 Tailscale IP，并重新配对。
-
-Codex Desktop 升级后不会仅因为版本号变化而禁止远程操作。Bridge 会进入兼容模式继续尝试已知协议；如果某个接口确实发生变化，只会显示该项操作的错误。
-
-当前 APK 是 Debug 测试包，适合个人侧载。若需要公开分发或稳定自动升级，应另外构建固定签名的 Release APK。
 
 ## 常见问题
 
