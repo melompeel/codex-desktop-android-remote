@@ -29,11 +29,15 @@ public partial class MainWindow : Window
     private bool _allowExit;
     private bool _initializing = true;
     private bool _busy;
+    private bool _restartWhenMissing;
+    private int _missingHealthChecks;
+    private DateTimeOffset _nextAutomaticRestartAt = DateTimeOffset.MinValue;
 
     public MainWindow(bool smokeMode = false)
     {
         InitializeComponent();
         _settings = _settingsStore.Load();
+        _restartWhenMissing = _settings.StartBridgeOnLaunch;
         PortTextBox.Text = _settings.Port.ToString();
         CloseToTrayCheckBox.IsChecked = _settings.CloseToTray;
         AutostartCheckBox.IsChecked = AutostartService.IsEnabled();
@@ -42,7 +46,7 @@ public partial class MainWindow : Window
 
         _manager = new BridgeManager(_client);
         _manager.LogReceived += AppendLog;
-        _pollTimer.Tick += async (_, _) => await RefreshStatusAsync();
+        _pollTimer.Tick += async (_, _) => await RefreshAndRecoverAsync();
         _countdownTimer.Tick += (_, _) => UpdateCountdown();
         _trayIcon = CreateTrayIcon();
         _initializing = false;
@@ -77,6 +81,45 @@ public partial class MainWindow : Window
         catch { return; }
         var status = await _client.GetStatusAsync(port);
         ApplyStatus(status);
+    }
+
+    private async Task RefreshAndRecoverAsync()
+    {
+        if (_busy) return;
+        int port;
+        try { port = CurrentPort; }
+        catch { return; }
+        var status = await _client.GetStatusAsync(port);
+        ApplyStatus(status);
+        if (status is not null)
+        {
+            _missingHealthChecks = 0;
+            _nextAutomaticRestartAt = DateTimeOffset.MinValue;
+            return;
+        }
+        if (!_restartWhenMissing || DateTimeOffset.UtcNow < _nextAutomaticRestartAt) return;
+        _missingHealthChecks += 1;
+        if (_missingHealthChecks < 2) return;
+
+        _missingHealthChecks = 0;
+        try
+        {
+            SetBusy(true);
+            AppendLog("Bridge 连续两次未响应，正在自动恢复...");
+            var recovered = await _manager.StartAsync(port);
+            ApplyStatus(recovered);
+            AppendLog("Bridge 已自动恢复，手机授权保持不变。");
+        }
+        catch (Exception error)
+        {
+            _nextAutomaticRestartAt = DateTimeOffset.UtcNow.AddSeconds(15);
+            AppendLog($"Bridge 自动恢复失败，15 秒后重试：{error.Message}");
+            ApplyStatus(null);
+        }
+        finally
+        {
+            SetBusy(false);
+        }
     }
 
     private void ApplyStatus(LocalBridgeStatus? status)
@@ -159,12 +202,14 @@ public partial class MainWindow : Window
     private async void Start_Click(object sender, RoutedEventArgs e)
     {
         SavePort();
+        _restartWhenMissing = true;
         await RunOperationAsync(() => _manager.StartAsync(CurrentPort));
     }
 
     private async void Stop_Click(object sender, RoutedEventArgs e)
     {
         if (_busy) return;
+        _restartWhenMissing = false;
         try
         {
             SetBusy(true);
@@ -181,6 +226,7 @@ public partial class MainWindow : Window
     private async void Restart_Click(object sender, RoutedEventArgs e)
     {
         if (_busy) return;
+        _restartWhenMissing = true;
         try
         {
             SetBusy(true);
@@ -290,7 +336,11 @@ public partial class MainWindow : Window
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("打开管理器", null, (_, _) => Dispatcher.Invoke(ShowFromTray));
         menu.Items.Add("启动 Bridge", null, async (_, _) => await Dispatcher.InvokeAsync(
-            async () => await RunOperationAsync(() => _manager.StartAsync(CurrentPort))));
+            async () =>
+            {
+                _restartWhenMissing = true;
+                await RunOperationAsync(() => _manager.StartAsync(CurrentPort));
+            }));
         menu.Items.Add("停止 Bridge", null, (_, _) => Dispatcher.Invoke(
             () => Stop_Click(this, new RoutedEventArgs())));
         menu.Items.Add(new Forms.ToolStripSeparator());
