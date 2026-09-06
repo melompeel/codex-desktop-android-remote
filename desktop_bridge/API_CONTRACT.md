@@ -83,7 +83,8 @@ Task summaries and `GET /v1/tasks/:threadId` may include:
 Task summaries also include `updatedAt` in Unix milliseconds when the Desktop
 provides it, allowing clients to detect work completed while disconnected.
 
-Timeline `ImageView` entries and assistant Markdown images use `kind: "image"` and include an opaque `mediaId`.
+Timeline `ImageView` entries and assistant Markdown images use `kind: "image"`; images attached to
+user messages use `kind: "userImage"`. Both include an opaque `mediaId`.
 Fetch their bytes from `GET /v1/tasks/:threadId/media/:mediaId`. Local Markdown file
 links are rewritten to `codexremote://resource/<opaque-id>` and include resource metadata;
 download them with `GET /v1/tasks/:threadId/resources/:resourceId`. The Bridge resolves

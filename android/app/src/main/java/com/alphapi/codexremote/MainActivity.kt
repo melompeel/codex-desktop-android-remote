@@ -4,6 +4,7 @@ import android.Manifest
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -85,7 +86,10 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private val viewModel: RemoteViewModel by viewModels()
@@ -218,8 +222,26 @@ private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
     LaunchedEffect(Unit) {
         val result = updater.check()
         updateState = result
-        if (result is UpdateState.Available) showUpdates = true
+        if (result is UpdateState.Available || result is UpdateState.ReadyToInstall) showUpdates = true
     }
+
+    LaunchedEffect(updateState) {
+        while (updateState is UpdateState.Downloading) {
+            delay(1_000)
+            val current = withContext(Dispatchers.IO) { updater.currentDownloadState() }
+            when {
+                current == null -> updateState = UpdateState.Error("系统下载已中断，请重新下载")
+                current !is UpdateState.Downloading -> updateState = current
+            }
+        }
+    }
+
+    RemoteBackNavigation(
+        detailOpen = detailOpen,
+        tab = tab,
+        onCloseDetail = { detailOpen = false },
+        onSelectTasks = { tab = 0 },
+    )
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -377,19 +399,16 @@ private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
                 scope.launch { updateState = updater.check() }
             },
             onDownload = { update ->
-                updateState = UpdateState.Downloading(update)
-                scope.launch {
-                    updateState = try {
-                        val apk = updater.download(update)
-                        val ready = UpdateState.ReadyToInstall(update, apk)
-                        if (updater.install(apk)) showUpdates = false
-                        ready
-                    } catch (error: Exception) {
-                        UpdateState.Error(error.message ?: "下载更新失败")
-                    }
+                updateState = try {
+                    updater.enqueue(update)
+                } catch (error: Exception) {
+                    UpdateState.Error(error.message ?: "无法启动后台下载")
                 }
             },
-            onInstall = { ready -> updater.install(ready.apk) },
+            onInstall = { ready ->
+                updater.install(ready.downloadId)
+                showUpdates = false
+            },
         )
     }
     if (confirmDisconnect) {
@@ -462,6 +481,17 @@ private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
 }
 
 @Composable
+internal fun RemoteBackNavigation(
+    detailOpen: Boolean,
+    tab: Int,
+    onCloseDetail: () -> Unit,
+    onSelectTasks: () -> Unit,
+) {
+    BackHandler(enabled = detailOpen, onBack = onCloseDetail)
+    BackHandler(enabled = !detailOpen && tab != 0, onBack = onSelectTasks)
+}
+
+@Composable
 private fun AppUpdateDialog(
     state: UpdateState,
     onDismiss: () -> Unit,
@@ -508,7 +538,7 @@ private fun AppUpdateDialog(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     CircularProgressIndicator(Modifier.height(24.dp))
-                    Text("APK 正在下载，完成后会打开 Android 系统安装界面。")
+                    Text("APK 由 Android 系统在后台下载。可以关闭此窗口，并在状态栏查看进度；完成后点击通知即可安装。")
                 }
                 is UpdateState.ReadyToInstall -> Text(
                     "APK 已下载。点击继续安装；如果 Android 先打开“允许安装未知应用”，允许后返回这里再点一次。",

@@ -65,5 +65,5 @@ internal fun shouldMarkCompleted(
 }
 
 internal fun isActiveTaskStatus(status: String): Boolean =
-    status.equals("active", ignoreCase = true) ||
-        status.equals("inProgress", ignoreCase = true)
+    status.lowercase().replace("-", "").replace("_", "") in
+        setOf("active", "inprogress", "running")

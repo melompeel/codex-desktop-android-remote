@@ -13,16 +13,19 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -73,7 +76,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -380,6 +382,7 @@ private fun ConversationEntry(
 ) {
     when (item.kind) {
         "user" -> UserMessage(item.text)
+        "userImage" -> TimelineImage(item.media, mediaFile, mediaLoading, mediaFailed, onLoadTaskMedia, fromUser = true)
         "assistant" -> AssistantMessage(item.text, markwon)
         "plan" -> PlanMessage(item.text, markwon)
         "image" -> TimelineImage(item.media, mediaFile, mediaLoading, mediaFailed, onLoadTaskMedia)
@@ -395,68 +398,77 @@ private fun TimelineImage(
     loading: Boolean,
     failed: Boolean,
     onLoadTaskMedia: (String) -> Unit,
+    fromUser: Boolean = false,
 ) {
     if (media == null) return
     LaunchedEffect(media.mediaId, file) {
         if (file?.isFile != true) onLoadTaskMedia(media.mediaId)
     }
-    val bitmap = produceState<Bitmap?>(initialValue = null, file) {
-        value = withContext(Dispatchers.IO) { file?.let(::decodeTaskImage) }
-    }.value
+    var bitmap by remember(file) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(file) {
+        bitmap = withContext(Dispatchers.IO) { file?.let(::decodeTaskImage) }
+    }
+    val displayedBitmap = bitmap
     var expanded by rememberSaveable(media.mediaId) { mutableStateOf(false) }
     Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
-        Text(
-            "Codex 图片",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.primary,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(bottom = 6.dp),
-        )
-        Surface(
-            color = Color(0xFFF0F0ED),
-            shape = MaterialTheme.shapes.small,
-            modifier = Modifier.fillMaxWidth(),
+        Column(
+            Modifier
+                .widthIn(max = if (fromUser) 344.dp else 720.dp)
+                .align(if (fromUser) Alignment.End else Alignment.Start),
         ) {
-            when {
-                bitmap != null -> Image(
-                    bitmap = bitmap.asImageBitmap(),
-                    contentDescription = media.name,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(bitmap.width.toFloat() / bitmap.height.coerceAtLeast(1))
-                        .heightIn(max = 420.dp)
-                        .clickable { expanded = true }
-                        .testTag("timelineImage:${media.mediaId}"),
-                )
-                failed -> Box(
-                    Modifier.fillMaxWidth().height(140.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    TextButton(onClick = { onLoadTaskMedia(media.mediaId) }) {
-                        Text("重试加载图片", color = MaterialTheme.colorScheme.error)
+            Text(
+                if (fromUser) "你发送的图片" else "Codex 图片",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(bottom = 6.dp),
+            )
+            Surface(
+                color = Color(0xFFF0F0ED),
+                shape = MaterialTheme.shapes.small,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                when {
+                    displayedBitmap != null -> Image(
+                        bitmap = displayedBitmap.asImageBitmap(),
+                        contentDescription = media.name,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(displayedBitmap.width.toFloat() / displayedBitmap.height.coerceAtLeast(1))
+                            .heightIn(max = 420.dp)
+                            .clickable { expanded = true }
+                            .testTag("timelineImage:${media.mediaId}"),
+                    )
+                    failed -> Box(
+                        Modifier.fillMaxWidth().height(140.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        TextButton(onClick = { onLoadTaskMedia(media.mediaId) }) {
+                            Text("重试加载图片", color = MaterialTheme.colorScheme.error)
+                        }
                     }
+                    loading -> Box(
+                        Modifier.fillMaxWidth().height(140.dp),
+                        contentAlignment = Alignment.Center,
+                    ) { CircularProgressIndicator(Modifier.size(24.dp)) }
+                    else -> Box(
+                        Modifier.fillMaxWidth().height(140.dp),
+                        contentAlignment = Alignment.Center,
+                    ) { Text("正在准备图片", color = Color(0xFF777772)) }
                 }
-                loading -> Box(
-                    Modifier.fillMaxWidth().height(140.dp),
-                    contentAlignment = Alignment.Center,
-                ) { CircularProgressIndicator(Modifier.size(24.dp)) }
-                else -> Box(
-                    Modifier.fillMaxWidth().height(140.dp),
-                    contentAlignment = Alignment.Center,
-                ) { Text("正在准备图片", color = Color(0xFF777772)) }
             }
+            Text(
+                media.name,
+                modifier = Modifier.padding(top = 5.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = Color(0xFF666661),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
-        Text(
-            media.name,
-            modifier = Modifier.padding(top = 5.dp),
-            style = MaterialTheme.typography.labelSmall,
-            color = Color(0xFF666661),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
     }
-    if (expanded && bitmap != null) {
+    if (expanded && displayedBitmap != null) {
         Dialog(
             onDismissRequest = { expanded = false },
             properties = DialogProperties(
@@ -471,7 +483,7 @@ private fun TimelineImage(
                     .clickable { expanded = false },
             ) {
                 Image(
-                    bitmap = bitmap.asImageBitmap(),
+                    bitmap = displayedBitmap.asImageBitmap(),
                     contentDescription = media.name,
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -578,10 +590,60 @@ private fun MarkdownBody(
                     key = index,
                 )
                 is MarkdownSegment.Code -> CodeBlock(segment.code, segment.language)
+                is MarkdownSegment.Table -> MarkdownTable(segment, markwon, textColor)
             }
         }
     }
 }
+
+@Composable
+private fun MarkdownTable(
+    table: MarkdownSegment.Table,
+    markwon: Markwon,
+    textColor: Color,
+) {
+    val columnWidths = remember(table) {
+        table.header.indices.map { column ->
+            val widest = (listOf(table.header[column]) + table.rows.map { it[column] })
+                .maxOf(::markdownCellWidth)
+            (widest * 8 + 28).coerceIn(100, 220).dp
+        }
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .testTag("markdownTable"),
+    ) {
+        (listOf(table.header) + table.rows).forEachIndexed { rowIndex, row ->
+            Row(Modifier.height(IntrinsicSize.Min)) {
+                row.forEachIndexed { columnIndex, cell ->
+                    Box(
+                        Modifier
+                            .width(columnWidths[columnIndex])
+                            .fillMaxHeight()
+                            .background(if (rowIndex == 0) Color(0xFFE9ECE9) else Color.Transparent)
+                            .border(0.5.dp, Color(0xFFB8BDBA))
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                    ) {
+                        MarkdownProse(
+                            markdown = if (rowIndex == 0) "**$cell**" else cell,
+                            markwon = markwon,
+                            textSizeSp = 14f,
+                            textColor = textColor,
+                            key = rowIndex * table.header.size + columnIndex,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun markdownCellWidth(value: String): Int = value.fold(0) { width, character ->
+    width + if (character.code >= 0x2E80) 2 else 1
+}.coerceAtLeast(4)
 
 @Composable
 private fun MarkdownProse(
@@ -590,6 +652,7 @@ private fun MarkdownProse(
     textSizeSp: Float,
     textColor: Color,
     key: Int,
+    modifier: Modifier = Modifier.fillMaxWidth(),
 ) {
     val linkColor = MaterialTheme.colorScheme.primary.toArgb()
     AndroidView(
@@ -609,7 +672,7 @@ private fun MarkdownProse(
             view.tag = key
             markwon.setMarkdown(view, markdown)
         },
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier,
     )
 }
 

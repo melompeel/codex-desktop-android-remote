@@ -9,11 +9,14 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import org.junit.Rule
 import org.junit.Test
+import org.junit.Assert.assertTrue
 
 class WorkspaceUiTest {
     @get:Rule
@@ -136,5 +139,50 @@ class WorkspaceUiTest {
         compose.onNodeWithText("远程连接").assertIsDisplayed()
         compose.onNodeWithText("工作室").assertIsDisplayed()
         compose.onNodeWithText("地址名称").assertIsDisplayed()
+    }
+
+    @Test
+    fun modelMenuMatchesItsFieldWidth() {
+        val models = listOf(
+            "gpt-6-astra",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.2",
+        ).map { id ->
+            ModelOptionDto(
+                id = id,
+                displayName = id.uppercase(),
+                supportedReasoningEfforts = listOf(ReasoningEffortDto("high")),
+                defaultReasoningEffort = "high",
+            )
+        }
+        compose.setContent {
+            MaterialTheme {
+                ThreadSettingsDialog(
+                    task = TaskDto(
+                        threadId = "thread-model-menu",
+                        title = "Model",
+                        status = "idle",
+                        revision = 1,
+                        pendingApprovals = 0,
+                        settings = ThreadSettingsDto("gpt-5.6-sol", "high"),
+                    ),
+                    models = models,
+                    saving = false,
+                    onDismiss = {},
+                    onSave = { _, _ -> },
+                )
+            }
+        }
+
+        compose.onNodeWithTag("selector:模型").performClick()
+        val fieldWidth = compose.onNodeWithTag("selector:模型").fetchSemanticsNode().boundsInRoot.width
+        val menuWidth = compose.onNodeWithTag("selectorMenu:模型").fetchSemanticsNode().boundsInRoot.width
+        assertTrue("menu width=$menuWidth field width=$fieldWidth", kotlin.math.abs(menuWidth - fieldWidth) <= 2f)
+        compose.onNodeWithText("GPT-6-ASTRA").assertIsDisplayed()
     }
 }

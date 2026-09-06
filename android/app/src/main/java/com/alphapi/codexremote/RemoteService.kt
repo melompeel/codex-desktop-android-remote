@@ -1,11 +1,13 @@
 package com.alphapi.codexremote
 
+import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -18,6 +20,8 @@ import kotlinx.coroutines.launch
 class RemoteService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var approvalJob: Job? = null
+    private var backgroundRefresh: BackgroundRefreshLoop? = null
+    private var activeTaskWakeLock: PowerManager.WakeLock? = null
     private val shownApprovals = mutableSetOf<String>()
     private val shownCompletedThreads = mutableSetOf<String>()
 
@@ -39,8 +43,18 @@ class RemoteService : Service() {
         )
         val repository = RemoteRepository.get(this)
         repository.restoreAndStart(startService = false)
+        backgroundRefresh = BackgroundRefreshLoop(
+            scope = scope,
+            intervalMs = {
+                backgroundRefreshInterval(repository.state.value.tasks.map { it.status })
+            },
+            refresh = repository::refresh,
+        ).also(BackgroundRefreshLoop::start)
         approvalJob = scope.launch {
             repository.state.collectLatest { state ->
+                val hasActiveTask = state.tasks.any { isActiveTaskStatus(it.status) }
+                updateActiveTaskWakeLock(hasActiveTask)
+                backgroundRefresh?.updateSchedule()
                 val connectionText = when {
                     !state.connected -> "手机与 Bridge 连接中断"
                     !state.ipcConnected -> "Bridge 已连接，Codex Desktop 未连接"
@@ -91,7 +105,31 @@ class RemoteService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
     override fun onBind(intent: Intent?): IBinder? = null
-    override fun onDestroy() { approvalJob?.cancel(); scope.cancel(); super.onDestroy() }
+    override fun onDestroy() {
+        approvalJob?.cancel()
+        backgroundRefresh?.stop()
+        releaseActiveTaskWakeLock()
+        scope.cancel()
+        super.onDestroy()
+    }
+
+    @SuppressLint("WakelockTimeout")
+    private fun updateActiveTaskWakeLock(active: Boolean) {
+        if (!active) {
+            releaseActiveTaskWakeLock()
+            return
+        }
+        val wakeLock = activeTaskWakeLock ?: getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:activeCodexTask")
+            .apply { setReferenceCounted(false) }
+            .also { activeTaskWakeLock = it }
+        if (!wakeLock.isHeld) wakeLock.acquire()
+    }
+
+    private fun releaseActiveTaskWakeLock() {
+        activeTaskWakeLock?.takeIf { it.isHeld }?.release()
+        activeTaskWakeLock = null
+    }
 
     private fun connectionNotification(text: String) =
         NotificationCompat.Builder(this, CHANNEL_CONNECTION)

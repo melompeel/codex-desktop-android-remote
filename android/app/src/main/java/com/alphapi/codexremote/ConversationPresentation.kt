@@ -10,6 +10,7 @@ internal data class ActivityPresentation(
 internal sealed interface MarkdownSegment {
     data class Prose(val markdown: String) : MarkdownSegment
     data class Code(val language: String?, val code: String) : MarkdownSegment
+    data class Table(val header: List<String>, val rows: List<List<String>>) : MarkdownSegment
 }
 
 internal fun splitMarkdownSegments(markdown: String): List<MarkdownSegment> {
@@ -20,8 +21,7 @@ internal fun splitMarkdownSegments(markdown: String): List<MarkdownSegment> {
     var language: String? = null
 
     fun flushProse() {
-        val value = prose.joinToString("\n").trim()
-        if (value.isNotEmpty()) result += MarkdownSegment.Prose(value)
+        result += splitProseTables(prose)
         prose.clear()
     }
 
@@ -50,6 +50,80 @@ internal fun splitMarkdownSegments(markdown: String): List<MarkdownSegment> {
     if (marker != null) flushCode() else flushProse()
     return result
 }
+
+private fun splitProseTables(lines: List<String>): List<MarkdownSegment> {
+    val result = mutableListOf<MarkdownSegment>()
+    val prose = mutableListOf<String>()
+
+    fun flushProse() {
+        val value = prose.joinToString("\n").trim()
+        if (value.isNotEmpty()) result += MarkdownSegment.Prose(value)
+        prose.clear()
+    }
+
+    var index = 0
+    while (index < lines.size) {
+        val header = parseMarkdownTableRow(lines[index])
+        val separator = lines.getOrNull(index + 1)?.let(::parseMarkdownTableRow)
+        val isTable = header != null && separator != null &&
+            header.size == separator.size && separator.all(::isMarkdownTableSeparator)
+        if (!isTable) {
+            prose += lines[index]
+            index += 1
+            continue
+        }
+
+        flushProse()
+        val rows = mutableListOf<List<String>>()
+        index += 2
+        while (index < lines.size) {
+            val row = parseMarkdownTableRow(lines[index])
+                ?.takeIf { it.size == header!!.size }
+                ?: break
+            rows += row
+            index += 1
+        }
+        result += MarkdownSegment.Table(header!!, rows)
+    }
+    flushProse()
+    return result
+}
+
+private fun parseMarkdownTableRow(line: String): List<String>? {
+    val trimmed = line.trim()
+    if ('|' !in trimmed) return null
+    val content = trimmed
+        .removePrefix("|")
+        .removeSuffix("|")
+    val cells = mutableListOf<String>()
+    val current = StringBuilder()
+    var escaped = false
+    content.forEach { character ->
+        if (escaped) {
+            if (character == '|') current.append('|')
+            else {
+                current.append('\\')
+                current.append(character)
+            }
+            escaped = false
+            return@forEach
+        }
+        when {
+            character == '\\' -> escaped = true
+            character == '|' -> {
+                cells += current.toString().trim()
+                current.clear()
+            }
+            else -> current.append(character)
+        }
+    }
+    if (escaped) current.append('\\')
+    cells += current.toString().trim()
+    return cells.takeIf { it.size >= 2 }
+}
+
+private fun isMarkdownTableSeparator(value: String): Boolean =
+    value.replace(" ", "").matches(Regex(":?-{3,}:?"))
 
 internal fun isAllowedExternalLink(value: String): Boolean = runCatching {
     URI(value).scheme?.lowercase() in setOf("http", "https")

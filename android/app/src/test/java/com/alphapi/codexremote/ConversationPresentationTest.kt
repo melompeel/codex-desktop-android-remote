@@ -67,6 +67,26 @@ val answer = 42
     }
 
     @Test
+    fun separatesMarkdownTablesFromSurroundingProse() {
+        val segments = splitMarkdownSegments(
+            """Before
+
+| 方案 | 内存 | 绘制 |
+| --- | --- | --- |
+| 原表 | 不变 | 一次 |
+| 扩展 | 增长 | 多次 |
+
+After""",
+        )
+
+        assertTrue(segments[0] is MarkdownSegment.Prose)
+        val table = segments[1] as MarkdownSegment.Table
+        assertEquals(listOf("方案", "内存", "绘制"), table.header)
+        assertEquals(listOf(listOf("原表", "不变", "一次"), listOf("扩展", "增长", "多次")), table.rows)
+        assertTrue(segments[2] is MarkdownSegment.Prose)
+    }
+
+    @Test
     fun allowsOnlyWebLinksFromRenderedMarkdown() {
         assertTrue(isAllowedExternalLink("https://openai.com/docs"))
         assertTrue(isAllowedExternalLink("http://192.168.1.2/help"))

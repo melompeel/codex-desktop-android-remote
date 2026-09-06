@@ -19,7 +19,7 @@ export type TimelineResource = {
 export type TimelineItem = {
   id: string;
   turnId: string;
-  kind: "user" | "assistant" | "command" | "file" | "plan" | "status" | "image";
+  kind: "user" | "userImage" | "assistant" | "command" | "file" | "plan" | "status" | "image";
   text: string;
   status?: string;
   media?: TimelineMedia;
@@ -220,9 +220,7 @@ function presentItems(
     );
   }
   if (type === "usermessage" || type === "user" || type === "steeringusermessage") {
-    return singleTimeline(
-      timeline(id, turnId, "user", readText(item.content ?? item.input ?? item.text), status),
-    );
+    return presentUserItems(threadId, id, turnId, item.content ?? item.input ?? item.text, status);
   }
   if (type === "agentmessage" || type === "assistantmessage" || type === "assistant") {
     return presentRichTextItems(
@@ -277,6 +275,55 @@ function presentItems(
     );
   }
   return [];
+}
+
+function presentUserItems(
+  threadId: string,
+  itemId: string,
+  turnId: string,
+  content: unknown,
+  status: string,
+): TimelineItem[] {
+  const presented: TimelineItem[] = [];
+  for (const [index, part] of userMessageParts(threadId, itemId, content).entries()) {
+    const id = `${itemId}:${"media" in part ? "image" : "text"}:${index}`;
+    const item = "media" in part
+      ? timeline(id, turnId, "userImage", part.media.name, status, publicMedia(part.media))
+      : timeline(id, turnId, "user", part.text, status);
+    if (item) presented.push(item);
+  }
+  return presented;
+}
+
+function userMessageParts(
+  threadId: string,
+  itemId: string,
+  content: unknown,
+): RichTextPart[] {
+  const values = Array.isArray(content) ? content : [content];
+  const result: RichTextPart[] = [];
+  const text = mutableTextPart(result);
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    const record = asRecord(value);
+    const type = readString(record?.type).toLowerCase().replace(/[-_]/g, "");
+    if (record && (type === "localimage" || type === "image" || type === "imageview")) {
+      const media = imageMedia(threadId, `${itemId}:user-image:${index}`, record);
+      if (media) result.push({ media });
+      continue;
+    }
+    const valueText = readText(value);
+    if (valueText) text(valueText);
+  }
+  return result;
+}
+
+function mutableTextPart(result: RichTextPart[]): (value: string) => void {
+  return (value: string) => {
+    const previous = result.at(-1);
+    if (previous && "text" in previous) previous.text = `${previous.text}\n${value}`;
+    else result.push({ text: value });
+  };
 }
 
 function presentRichTextItems(
@@ -496,6 +543,16 @@ export function resolveThreadMedia(
       if (type === "imageview" || type === "image") {
         const media = imageMedia(thread.threadId, itemId, item);
         if (media?.mediaId === mediaId) return media;
+        continue;
+      }
+      if (type === "usermessage" || type === "user" || type === "steeringusermessage") {
+        for (const part of userMessageParts(
+          thread.threadId,
+          itemId,
+          item.content ?? item.input ?? item.text,
+        )) {
+          if ("media" in part && part.media.mediaId === mediaId) return part.media;
+        }
         continue;
       }
       if (!isAssistantOutputType(type)) continue;

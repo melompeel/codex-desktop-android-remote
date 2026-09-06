@@ -82,6 +82,41 @@ describe("task presentation", () => {
     });
   });
 
+  it("keeps user-uploaded images beside their message in the remote timeline", () => {
+    const thread = {
+      threadId: "thread-user-image",
+      revision: 7,
+      state: {
+        turns: [{
+          id: "turn-user-image",
+          status: "completed",
+          items: [{
+            id: "user-image-message",
+            type: "userMessage",
+            content: [
+              { type: "text", text: "请查看这张图" },
+              { type: "localImage", path: "C:\\bridge\\screen.png" },
+            ],
+          }],
+        }],
+      },
+    };
+
+    const detail = presentThread(thread);
+
+    expect(detail.items.map((item) => item.kind)).toEqual(["user", "userImage"]);
+    expect(detail.items[1]).toMatchObject({
+      kind: "userImage",
+      text: "screen.png",
+      media: { name: "screen.png", mimeType: "image/png" },
+    });
+    const media = detail.items[1]?.media;
+    expect(resolveThreadMedia(thread, media!.mediaId)).toEqual({
+      ...media,
+      fsPath: "C:\\bridge\\screen.png",
+    });
+  });
+
   it("turns assistant markdown images into ordered remote media items", () => {
     const thread = {
       threadId: "thread-markdown-image",

@@ -6,6 +6,7 @@ import android.view.WindowManager
 import android.graphics.Bitmap
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,6 +36,28 @@ import org.junit.runner.RunWith
 class ConversationPaneTest {
     @get:Rule
     val compose = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun systemBackReturnsFromConversationToTaskList() {
+        var detailOpen by mutableStateOf(true)
+        compose.setContent {
+            MaterialTheme {
+                RemoteBackNavigation(
+                    detailOpen = detailOpen,
+                    tab = 0,
+                    onCloseDetail = { detailOpen = false },
+                    onSelectTasks = {},
+                )
+                Text(if (detailOpen) "会话详情" else "任务列表")
+            }
+        }
+
+        compose.onNodeWithText("会话详情").assertIsDisplayed()
+        compose.activityRule.scenario.onActivity { activity ->
+            activity.onBackPressedDispatcher.onBackPressed()
+        }
+        compose.onNodeWithText("任务列表").assertIsDisplayed()
+    }
 
     @Test
     fun keepsComposerVisibleAndToolDetailsCollapsedUntilRequested() {
@@ -223,6 +246,66 @@ class ConversationPaneTest {
             assertTrue(loadRequested)
             assertEquals("docs/guide.md", selectedPath)
         }
+    }
+
+    @Test
+    fun rendersMarkdownTablesAndUserImages() {
+        val mediaId = "user-media-1"
+        val mediaFile = testPng()
+        compose.setContent {
+            MaterialTheme {
+                TaskConversationPane(
+                    task = TaskDto("thread-rich", "Rich", "idle", 1, 0, true),
+                    detail = TaskDetailDto(
+                        "thread-rich",
+                        "Rich",
+                        "idle",
+                        1,
+                        items = listOf(
+                            TimelineItemDto(
+                                id = "assistant-table",
+                                turnId = "turn-1",
+                                kind = "assistant",
+                                text = "| 方案 | 内存 |\n| --- | --- |\n| 原表 | 不变 |",
+                            ),
+                            TimelineItemDto(
+                                id = "user-image",
+                                turnId = "turn-2",
+                                kind = "userImage",
+                                text = "phone.png",
+                                media = TimelineMediaDto(mediaId, "phone.png", "image/png"),
+                            ),
+                        ),
+                    ),
+                    canWrite = true,
+                    draft = "",
+                    deliveryMode = DeliveryMode.START,
+                    queued = emptyList(),
+                    queueReady = false,
+                    attachments = emptyList(),
+                    taskMediaById = mapOf(mediaId to mediaFile),
+                    models = emptyList(),
+                    capabilities = RemoteCapabilitiesDto(),
+                    sending = false,
+                    stopping = false,
+                    onDraftChange = {},
+                    onDeliveryChange = {},
+                    onSend = {},
+                    onStop = {},
+                    onCancelQueued = {},
+                    onOpenSettings = {},
+                    onAttachmentsSelected = {},
+                    onRemoveAttachment = {},
+                )
+            }
+        }
+
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag("timelineImage:$mediaId").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("markdownTable").assertIsDisplayed()
+        compose.onNodeWithText("你发送的图片").assertIsDisplayed()
+        compose.onNodeWithTag("timelineImage:$mediaId").assertIsDisplayed()
     }
 
     @Test
