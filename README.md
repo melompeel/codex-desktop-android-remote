@@ -4,6 +4,16 @@
 
 > 本项目与 OpenAI 无关联，也不是官方产品。它依赖 Codex Desktop 的私有本地 IPC；桌面版升级后可能需要更新协议适配。
 
+## 界面预览
+
+| 任务列表 | 连续对话与折叠详情 | 待处理 |
+| --- | --- | --- |
+| <img src="docs/screenshots/01-task-list.png" width="260" alt="任务列表"> | <img src="docs/screenshots/02-conversation.png" width="260" alt="连续对话与折叠详情"> | <img src="docs/screenshots/03-pending.png" width="260" alt="审批和已完成待查看"> |
+
+| 动态模型列表 | 多连接地址 |
+| --- | --- |
+| <img src="docs/screenshots/04-model-selector.png" width="260" alt="动态读取 GPT-6-Astra 等模型"> | <img src="docs/screenshots/05-connections.png" width="260" alt="Tailscale 和局域网连接地址"> |
+
 ## 一、准备工作
 
 电脑需要：
