@@ -26,6 +26,10 @@ Attachments report `image` and `file`, a 10 MiB limit, and `queued: false`.
 fields `id`, `displayName`, `description`, `defaultReasoningEffort`,
 `supportedReasoningEfforts`, `inputModalities`, `isDefault`, and `serviceTiers` when
 present. Each supported effort uses `{ "reasoningEffort": "...", "description": "..." }`.
+Use `GET /v1/models?refresh=true` when opening a model selector to bypass the 30-second
+cache and refresh an idle catalog process. Background refreshes omit this parameter.
+The Bridge reads all model pages and periodically renews the read-only helper using
+the current installed runtime; it does not contain a fixed model allowlist.
 
 ## Tasks
 
@@ -60,6 +64,16 @@ Task summaries and `GET /v1/tasks/:threadId` may include:
   "activeTurnId": "turn-id"
 }
 ```
+
+Task summaries also include `updatedAt` in Unix milliseconds when the Desktop
+provides it, allowing clients to detect work completed while disconnected.
+
+Timeline `ImageView` entries and assistant Markdown images use `kind: "image"` and include an opaque `mediaId`.
+Fetch their bytes from `GET /v1/tasks/:threadId/media/:mediaId`. Local Markdown file
+links are rewritten to `codexremote://resource/<opaque-id>` and include resource metadata;
+download them with `GET /v1/tasks/:threadId/resources/:resourceId`. The Bridge resolves
+both IDs back against assistant output in the current task history. User-written
+links do not register downloadable resources, and network/UNC paths are rejected.
 
 `PATCH /v1/tasks/:threadId/settings` accepts `{ "model": "...", "effort": "..." }`.
 The pair is validated against the live model list and affects the next turn.
@@ -191,6 +205,13 @@ MIME/extension mismatches, invalid magic bytes, NUL-containing text, and files o
 
 Images are delivered as Desktop `localImage` input. Generic files are delivered as the
 Desktop-supported local `mention` input plus an `application` additional-context entry.
+
+`GET /v1/tasks/:threadId/workspace-files?query=<text>` lists up to 150 supported files
+under the task `cwd`, skipping dependency/build directories, symbolic links, unsupported
+formats, and files over 10 MiB. `POST /v1/tasks/:threadId/workspace-attachments` accepts
+`{ "relativePath": "docs/guide.md", "idempotencyKey": "..." }`, verifies the resolved
+path remains inside that workspace, and copies it into the same device-owned attachment
+store used by phone uploads.
 
 ## Safety behavior
 

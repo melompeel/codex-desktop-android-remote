@@ -1,6 +1,9 @@
 package com.alphapi.codexremote
 
+import java.io.File
+import androidx.test.platform.app.InstrumentationRegistry
 import android.view.WindowManager
+import android.graphics.Bitmap
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.getValue
@@ -11,7 +14,9 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onRoot
@@ -61,6 +66,13 @@ class ConversationPaneTest {
                                 "$ npm test\n\u001B[2J33 tests passed",
                                 "completed",
                             ),
+                            TimelineItemDto(
+                                "file-1",
+                                "turn-1",
+                                "file",
+                                "src/MainActivity.kt\nsrc/BridgeApi.kt",
+                                "completed",
+                            ),
                         ),
                     ),
                     canWrite = true,
@@ -88,9 +100,13 @@ class ConversationPaneTest {
         compose.onNodeWithText("给 Codex 发消息").assertIsDisplayed()
         compose.onNodeWithText("运行 npm 命令").assertIsDisplayed()
         compose.onAllNodesWithText("$ npm test", substring = true).assertCountEquals(0)
+        compose.onNodeWithText("正在编辑文件").assertIsDisplayed()
+        compose.onAllNodesWithText("src/MainActivity.kt", substring = true).assertCountEquals(0)
 
-        compose.onNodeWithContentDescription("展开").performClick()
+        compose.onAllNodesWithContentDescription("展开")[0].performClick()
         compose.onNodeWithText("$ npm test", substring = true).assertIsDisplayed()
+        compose.onAllNodesWithContentDescription("展开")[0].performClick()
+        compose.onNodeWithText("src/MainActivity.kt", substring = true).assertIsDisplayed()
 
         compose.onNodeWithText("给 Codex 发消息").performTextInput("继续检查")
         compose.onNodeWithContentDescription("发送").performClick()
@@ -138,6 +154,74 @@ class ConversationPaneTest {
             assertEquals(DeliveryMode.QUEUE, delivery)
             assertEquals(true, stopped)
             assertEquals("queued-1", cancelled)
+        }
+    }
+
+    @Test
+    fun rendersDesktopImagesAndOffersWorkspaceAttachments() {
+        var loadRequested = false
+        var selectedPath = ""
+        val mediaId = "media-1"
+        val mediaFile = testPng()
+        compose.setContent {
+            MaterialTheme {
+                TaskConversationPane(
+                    task = TaskDto("thread-media", "Media", "idle", 1, 0, true),
+                    detail = TaskDetailDto(
+                        "thread-media",
+                        "Media",
+                        "idle",
+                        1,
+                        items = listOf(
+                            TimelineItemDto(
+                                id = "image-1",
+                                turnId = "turn-1",
+                                kind = "image",
+                                text = "preview.png",
+                                media = TimelineMediaDto(mediaId, "preview.png", "image/png"),
+                            ),
+                        ),
+                    ),
+                    canWrite = true,
+                    draft = "",
+                    deliveryMode = DeliveryMode.START,
+                    queued = emptyList(),
+                    queueReady = false,
+                    attachments = emptyList(),
+                    taskMediaById = mapOf(mediaId to mediaFile),
+                    workspaceFiles = listOf(
+                        WorkspaceFileDto("docs/guide.md", "guide.md", "text/markdown", 128),
+                    ),
+                    models = emptyList(),
+                    capabilities = RemoteCapabilitiesDto(
+                        attachments = AttachmentCapabilitiesDto(enabled = true),
+                    ),
+                    sending = false,
+                    stopping = false,
+                    onDraftChange = {},
+                    onDeliveryChange = {},
+                    onSend = {},
+                    onStop = {},
+                    onCancelQueued = {},
+                    onOpenSettings = {},
+                    onAttachmentsSelected = {},
+                    onRemoveAttachment = {},
+                    onLoadWorkspaceFiles = { loadRequested = true },
+                    onWorkspaceFileSelected = { selectedPath = it.relativePath },
+                )
+            }
+        }
+
+        compose.waitUntil(timeoutMillis = 5_000) {
+            compose.onAllNodesWithTag("timelineImage:$mediaId").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("timelineImage:$mediaId").assertIsDisplayed()
+        compose.onNodeWithContentDescription("选择电脑文件").performClick()
+        compose.onNodeWithText("电脑文件").assertIsDisplayed()
+        compose.onNodeWithText("guide.md").performClick()
+        compose.runOnIdle {
+            assertTrue(loadRequested)
+            assertEquals("docs/guide.md", selectedPath)
         }
     }
 
@@ -197,4 +281,18 @@ class ConversationPaneTest {
 
         assertTrue("Composer-to-IME gap was ${gap}px", gap in 0f..120f)
     }
+}
+
+private fun testPng(): File {
+    val file = File.createTempFile(
+        "preview-",
+        ".png",
+        InstrumentationRegistry.getInstrumentation().targetContext.cacheDir,
+    )
+    file.outputStream().use { output ->
+        val bitmap = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888)
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+        bitmap.recycle()
+    }
+    return file
 }

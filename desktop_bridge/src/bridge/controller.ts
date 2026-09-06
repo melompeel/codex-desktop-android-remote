@@ -24,9 +24,13 @@ import {
   presentThread,
   presentThreadDiff,
   presentThreadMetadata,
+  resolveThreadMedia,
+  resolveThreadResource,
   type GitInfoSummary,
   type TaskDetail,
   type TaskDiff,
+  type ThreadMediaFile,
+  type ThreadResourceFile,
   type ThreadSettingsSummary,
 } from "../domain/presentation.js";
 
@@ -87,6 +91,7 @@ export type TaskSummary = {
   revision: number;
   pendingApprovals: number;
   ownerAvailable: boolean;
+  updatedAt?: number;
   cwd?: string;
   cwdGroupKey?: string;
   cwdGroupLabel?: string;
@@ -132,7 +137,7 @@ export interface TaskCatalogPort {
   listThreads(limit?: number): Promise<Array<Record<string, unknown>>>;
   listThreadPage?(query: TaskListQuery): Promise<CatalogThreadPage>;
   readThread?(threadId: string): Promise<Record<string, unknown> | null>;
-  listModels?(): Promise<Array<Record<string, unknown>>>;
+  listModels?(refresh?: boolean): Promise<Array<Record<string, unknown>>>;
 }
 
 export interface TaskCreatorPort {
@@ -160,6 +165,7 @@ export type OwnerHandoffOptions = {
 };
 
 export class BridgeController {
+  private readonly autoFollowInFlight = new Set<string>();
   private readonly ownerHandoffTimeoutMs: number;
   private readonly ownerHandoffPollIntervalMs: number;
   private readonly sleep: (milliseconds: number) => Promise<void>;
@@ -206,6 +212,28 @@ export class BridgeController {
 
   ingestIpcFrame(frame: IpcFrame): void {
     if (frame.type !== "broadcast") return;
+    if (
+      frame.method === "thread-stream-following-status-requested" ||
+      frame.method === "thread-stream-following-changed"
+    ) {
+      if (frame.version !== 1) {
+        this.store.appendEvent("protocol.unverified", {
+          method: frame.method,
+          expectedVersion: 1,
+          receivedVersion: frame.version ?? null,
+        });
+      }
+      const params = asRecord(frame.params);
+      const threadId = readString(params?.conversationId);
+      const following = params?.following;
+      if (
+        threadId &&
+        (frame.method === "thread-stream-following-status-requested" || following === true)
+      ) {
+        this.autoFollow(threadId);
+      }
+      return;
+    }
     if (frame.method === "thread-queued-followups-changed") {
       if (frame.version !== 1) {
         this.store.appendEvent("protocol.unverified", {
@@ -270,12 +298,14 @@ export class BridgeController {
     const live = (query.archived ? [] : this.store.listThreads())
       .map((thread) => {
         const metadata = presentThreadMetadata(thread.state);
+        const updatedAt = taskUpdatedAt(thread.state);
         return {
           threadId: thread.threadId,
           title: readString(thread.state.title) ?? "Untitled task",
           status: threadStatus(thread),
           revision: thread.revision,
           ownerAvailable: true,
+          ...(updatedAt !== undefined ? { updatedAt } : {}),
           pendingApprovals: approvals.filter(
             (approval) => approval.threadId === thread.threadId,
           ).length,
@@ -295,7 +325,15 @@ export class BridgeController {
         };
     for (const raw of page.data) {
       const threadId = readString(raw.id);
-      if (!threadId || byId.has(threadId)) continue;
+      if (!threadId) continue;
+      const updatedAt = taskUpdatedAt(raw);
+      const existing = byId.get(threadId);
+      if (existing) {
+        if (updatedAt !== undefined) {
+          existing.updatedAt = Math.max(existing.updatedAt ?? 0, updatedAt);
+        }
+        continue;
+      }
       const metadata = presentThreadMetadata(raw);
       const task: TaskSummary = {
         threadId,
@@ -304,6 +342,7 @@ export class BridgeController {
         revision: 0,
         pendingApprovals: 0,
         ownerAvailable: false,
+        ...(updatedAt !== undefined ? { updatedAt } : {}),
         ...metadata,
       };
       byId.set(threadId, task);
@@ -311,9 +350,9 @@ export class BridgeController {
     return { tasks: [...byId.values()], nextCursor: page.nextCursor };
   }
 
-  async listModels(): Promise<Array<Record<string, unknown>>> {
+  async listModels(refresh = false): Promise<Array<Record<string, unknown>>> {
     if (!this.catalog?.listModels) throw new Error("model-list-unavailable");
-    return this.catalog.listModels();
+    return this.catalog.listModels(refresh);
   }
 
   async createTask(input: CreateTaskInput): Promise<CreateTaskResult> {
@@ -374,12 +413,53 @@ export class BridgeController {
     await this.control.loadHistory(threadId);
   }
 
+  async restoreFollowing(): Promise<void> {
+    await Promise.allSettled(this.store.listThreads().map(async ({ threadId }) => {
+      try {
+        await this.control.loadHistory(threadId);
+      } catch (error) {
+        this.store.appendEvent("task.owner_unavailable", { error: errorMessage(error) }, threadId);
+      }
+    }));
+  }
+
   async getTaskDetail(threadId: string): Promise<TaskDetail> {
     const live = this.store.getThread(threadId);
     if (live) return presentThread(live);
     const history = await this.catalog?.readThread?.(threadId);
     if (!history) throw new Error("task-detail-not-found");
     return presentThread({ threadId, revision: 0, state: history });
+  }
+
+  async getTaskMedia(threadId: string, mediaId: string): Promise<ThreadMediaFile> {
+    const live = this.store.getThread(threadId);
+    if (live) {
+      const media = resolveThreadMedia(live, mediaId);
+      if (!media) throw new Error("task-media-not-found");
+      return media;
+    }
+    const history = await this.catalog?.readThread?.(threadId);
+    if (!history) throw new Error("task-detail-not-found");
+    const media = resolveThreadMedia({ threadId, revision: 0, state: history }, mediaId);
+    if (!media) throw new Error("task-media-not-found");
+    return media;
+  }
+
+  async getTaskResource(threadId: string, resourceId: string): Promise<ThreadResourceFile> {
+    const live = this.store.getThread(threadId);
+    if (live) {
+      const resource = resolveThreadResource(live, resourceId);
+      if (!resource) throw new Error("task-resource-not-found");
+      return resource;
+    }
+    const history = await this.catalog?.readThread?.(threadId);
+    if (!history) throw new Error("task-detail-not-found");
+    const resource = resolveThreadResource(
+      { threadId, revision: 0, state: history },
+      resourceId,
+    );
+    if (!resource) throw new Error("task-resource-not-found");
+    return resource;
   }
 
   async getTaskDiff(threadId: string): Promise<TaskDiff> {
@@ -579,6 +659,20 @@ export class BridgeController {
     throw new Error(`task-owner-handoff-timeout:${errorMessage(lastError)}`);
   }
 
+  private autoFollow(threadId: string): void {
+    if (this.store.getThread(threadId) || this.autoFollowInFlight.has(threadId)) return;
+    this.autoFollowInFlight.add(threadId);
+    void this.control.loadHistory(threadId)
+      .catch((error) => {
+        this.store.appendEvent(
+          "task.owner_unavailable",
+          { error: errorMessage(error) },
+          threadId,
+        );
+      })
+      .finally(() => this.autoFollowInFlight.delete(threadId));
+  }
+
   private createdTaskPartial(
     threadId: string,
     stage: Exclude<CreateTaskResult["stage"], "complete">,
@@ -601,6 +695,14 @@ export class BridgeController {
     );
     return result;
   }
+}
+
+function taskUpdatedAt(state: Record<string, unknown>): number | undefined {
+  const value = state.updatedAt ?? state.updated_at;
+  const timestamp = typeof value === "number"
+    ? value < 1_000_000_000_000 ? value * 1_000 : value
+    : typeof value === "string" ? Date.parse(value) : NaN;
+  return Number.isFinite(timestamp) && timestamp >= 0 ? Math.trunc(timestamp) : undefined;
 }
 
 function parseStreamChange(value: unknown): StreamChange | null {

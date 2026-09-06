@@ -41,7 +41,7 @@ class ConversationPresentationTest {
 
         val presented = presentActivity(item)
 
-        assertEquals("更新 2 个文件", presented.title)
+        assertEquals("正在编辑文件", presented.title)
         assertEquals("app/Main.kt\napp/Theme.kt", presented.detail)
     }
 

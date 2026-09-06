@@ -23,16 +23,11 @@ $listener = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction Sil
     Select-Object -First 1
 if ($listener) {
     $existingProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $($listener.OwningProcess)" -ErrorAction SilentlyContinue
-    $health = try {
-        Invoke-RestMethod -Uri "http://127.0.0.1:$Port/v1/health" -TimeoutSec 2
-    } catch {
-        $null
-    }
+    $entryPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'dist\index.js'))
+    $entryPattern = '(?:^|\s)"?' + [regex]::Escape($entryPath) + '"?(?:\s|$)'
     $isBridge =
-        $health.ok -eq $true -and
-        $null -ne $health.compatibility -and
         $existingProcess.Name -eq "node.exe" -and
-        $existingProcess.CommandLine -match "desktop_bridge[\\/]+dist[\\/]index\.js"
+        $existingProcess.CommandLine -match $entryPattern
 
     if (-not $isBridge) {
         throw "TCP port $Port is in use by another process ($($listener.OwningProcess)); it was not stopped."

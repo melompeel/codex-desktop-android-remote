@@ -120,6 +120,15 @@ export class CodexIpcAdapter {
     return owner;
   }
 
+  async requestFollowingStatus(): Promise<void> {
+    if (!this.transport.broadcast) throw new Error("ipc-broadcast-unavailable");
+    await this.transport.broadcast(
+      "thread-stream-following-status-requested",
+      {},
+      { version: this.version("thread-stream-following-status-requested") },
+    );
+  }
+
   async loadHistory(threadId: string): Promise<IpcFrame> {
     const owner = await this.discoverOwner(threadId);
     if (!this.transport.broadcast) {

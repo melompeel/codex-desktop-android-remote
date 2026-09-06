@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LaptopWindows
 import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -55,8 +56,9 @@ internal const val OPEN_TASKS_KEY = "__open__"
 internal fun ProjectDrawerContent(
     groups: List<ProjectGroup>,
     selectedKey: String,
+    activeServerUrl: String,
     onSelect: (String) -> Unit,
-    onDisconnect: () -> Unit,
+    onManageConnections: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val allTasks = groups.sumOf { it.tasks.size }
@@ -67,6 +69,14 @@ internal fun ProjectDrawerContent(
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp),
+        )
+        Text(
+            activeServerUrl,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 24.dp).padding(bottom = 12.dp),
         )
         NavigationDrawerItem(
             label = { DrawerLabel("所有任务", allTasks) },
@@ -107,10 +117,10 @@ internal fun ProjectDrawerContent(
         }
         HorizontalDivider(Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
         NavigationDrawerItem(
-            label = { Text("断开并清除配对") },
+            label = { Text("连接地址") },
             selected = false,
-            onClick = onDisconnect,
-            icon = { Icon(Icons.Default.LinkOff, null) },
+            onClick = onManageConnections,
+            icon = { Icon(Icons.Default.Link, null) },
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
         )
     }
@@ -270,7 +280,7 @@ internal fun NewTaskDialog(
         title = { Text("新建 Codex 任务") },
         text = {
             if (!enabled) {
-                Text("当前 Codex Desktop 版本尚未开放远程新建任务。请先在电脑上新建并打开任务。")
+                Text("当前连接暂不支持远程新建任务。请先在电脑上新建并打开任务。")
             } else {
                 Column(
                     Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()),

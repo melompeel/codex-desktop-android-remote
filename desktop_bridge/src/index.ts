@@ -45,7 +45,7 @@ const adapter = new CodexIpcAdapter(
   desktopVersion,
   runtime.version,
 );
-const catalog = new AppServerCatalog(runtime.executable);
+const catalog = new AppServerCatalog(async () => (await findCodexRuntime()).executable);
 const taskCreator = new AppServerTaskCreator(
   () => openStdioAppServer(runtime.executable),
 );
@@ -73,7 +73,17 @@ ipc.onBroadcast((frame) => {
     });
   }
 });
-ipc.onStatus((status) => store.appendEvent("ipc.status", { status }));
+ipc.onStatus((status) => {
+  store.appendEvent("ipc.status", { status });
+  if (status === "connected") {
+    void controller.restoreFollowing();
+    void adapter.requestFollowingStatus().catch((error) => {
+      store.appendEvent("ipc.following_status_error", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+});
 ipc.onError((error) => {
   store.appendEvent("ipc.error", { error: error.message });
   console.error(`Codex IPC: ${error.message}`);
@@ -94,7 +104,7 @@ const app = createBridgeApp({
 
 await app.listen({ host, port });
 console.log(`Codex Desktop Android Remote Bridge listening on ${host}:${port}`);
-console.log(`Desktop compatibility: ${JSON.stringify(adapter.compatibility)}`);
+console.log(`Codex Desktop ${desktopVersion ?? "connected"}`);
 console.log(`Pairing code (10 minutes): ${pairing.currentCode}`);
 for (const address of lanAddresses()) console.log(`LAN URL: http://${address}:${port}`);
 

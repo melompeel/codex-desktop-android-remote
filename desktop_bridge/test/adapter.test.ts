@@ -66,6 +66,23 @@ describe("current Codex Desktop IPC adapter", () => {
     });
   });
 
+  it("requests current Desktop following state after IPC connects", async () => {
+    const transport = new FakeTransport();
+    const adapter = new CodexIpcAdapter(
+      transport,
+      CURRENT_DESKTOP_ADAPTER,
+      "26.901.1978.0",
+    );
+
+    await adapter.requestFollowingStatus();
+
+    expect(transport.broadcasts).toEqual([{
+      method: "thread-stream-following-status-requested",
+      params: {},
+      options: { version: 1 },
+    }]);
+  });
+
   it("routes a command decision only to the live desktop owner", async () => {
     const transport = new FakeTransport();
     const adapter = new CodexIpcAdapter(

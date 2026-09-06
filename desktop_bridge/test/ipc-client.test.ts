@@ -135,6 +135,35 @@ describe("CodexIpcClient", () => {
     await waitUntil(() => client?.status === "connected", 1_000);
     expect(client.status).toBe("connected");
   });
+
+  it("reconnects a stalled pipe instead of reporting connected forever after timeouts", async () => {
+    let connections = 0;
+    server = createServer((socket) => {
+      connections += 1;
+      if (connections > 1) return serveRouter(socket);
+      const decoder = new FrameDecoder();
+      socket.on("data", (chunk) => {
+        for (const frame of decoder.push(chunk)) {
+          if (frame.method === "initialize") socket.write(encodeFrame({
+            type: "response", requestId: frame.requestId, resultType: "success",
+            result: { clientId: "stalled-client" },
+          }));
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("missing-test-port");
+    client = new CodexIpcClient({
+      endpoint: { host: "127.0.0.1", port: address.port },
+      clientType: "test-client", reconnectDelayMs: 10, requestTimeoutMs: 50,
+    });
+    await expect(client.request("thread-owner-discovery", {}, { version: 1 }))
+      .rejects.toThrow("ipc-request-timeout");
+    await waitUntil(() => connections >= 2 && client?.status === "connected", 1_000);
+    await expect(client.request("thread-owner-discovery", {}, { version: 1 }))
+      .resolves.toMatchObject({ resultType: "success" });
+  });
 });
 
 async function waitUntil(predicate: () => boolean, timeoutMs: number): Promise<void> {

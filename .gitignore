@@ -22,6 +22,10 @@ Thumbs.db
 /android/*.png
 /android/*.jpg
 /android/*.xml
+/android/artwork/candidates/
+/android/artwork/app-icon-final.png
+/android/artwork/app-icon-v2.png
+/tmp/
 
 # Local credentials and environment
 .env

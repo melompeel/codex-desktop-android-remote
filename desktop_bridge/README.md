@@ -45,6 +45,10 @@ New-NetFirewallRule -DisplayName "Codex Remote Bridge" -Direction Inbound -Proto
 - `GET /v1/health`：IPC、桌面版本和可选 ASR 状态。
 - `POST /v1/pair`：六位码配对，成功后立即轮换配对码。
 - `GET /v1/tasks`、`GET /v1/tasks/:id`：任务列表与精简时间线。
+- `GET /v1/tasks/:id/media/:mediaId`：读取该任务明确展示的本地图片。
+- `GET /v1/tasks/:id/resources/:resourceId`：下载该任务回复中明确引用的本地文件。
+- `GET /v1/tasks/:id/workspace-files`：列出当前任务工作目录内可作为附件的文件。
+- `POST /v1/tasks/:id/workspace-attachments`：把选中的工作区文件复制成设备隔离附件。
 - `POST /v1/tasks`：安全创建并交给 Codex Desktop 接管的新任务。
 - `GET /v1/capabilities`、`GET /v1/models`：功能开关和 Desktop 动态模型列表。
 - `PATCH /v1/tasks/:id/settings`：更新下一轮使用的模型和推理强度。
@@ -84,7 +88,7 @@ npm run build
 
 常驻 `app-server` 只用于读取任务目录和历史；所有实际用户任务写操作都必须先通过 `thread-owner-discovery` 找到当前 Codex Desktop owner。创建任务时，一次性 helper 只生成并回滚引导轮次，确认留下零轮次任务后立即退出；用户提示词只会在 Desktop 接管后通过 IPC 发送。
 
-已知协议版本记录在 `src/ipc/adapter.ts`。桌面包或内嵌 CLI 升级后，Bridge 会进入 `best-effort` 兼容模式并继续允许操作；版本不同只产生告警，不再整体切成只读。未知版本的 stream 若仍符合已知结构会继续同步，具体操作若被新版协议拒绝则只向客户端返回该操作错误。升级后仍应尽快重新验证并更新版本常量。
+已知协议版本记录在 `src/ipc/adapter.ts`。桌面包或内嵌 CLI 升级后，Bridge 会继续尝试已知协议；版本不同只产生诊断告警，不会整体切成只读。未知版本的 stream 若仍符合已知结构会继续同步，具体操作若被新版协议拒绝则只向客户端返回该操作错误。升级后仍应尽快重新验证并更新版本常量。
 
 ## 可选 Whisper
 

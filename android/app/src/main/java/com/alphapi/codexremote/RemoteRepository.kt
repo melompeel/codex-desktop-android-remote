@@ -5,16 +5,19 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.WebSocket
@@ -22,17 +25,25 @@ import okhttp3.WebSocket
 class RemoteRepository private constructor(context: Context) {
     private val applicationContext = context.applicationContext
     private val store = CredentialStore(applicationContext)
+    private val pendingReviewStore = PendingReviewStore(applicationContext)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutableState = MutableStateFlow(RemoteState())
     val state: StateFlow<RemoteState> = mutableState.asStateFlow()
-    private var api: BridgeApi? = null
+    @Volatile private var api: BridgeApi? = null
     private var stream: WebSocket? = null
-    private var reconnectJob: Job? = null
+    private val reconnectScheduler = ReconnectScheduler(scope) {
+        if (api != null) {
+            openStream()
+            runCatching { refreshNow() }.onFailure(::recordError)
+        }
+    }
     private var refreshCoordinator: ConflatedRefreshCoordinator? = null
     private var restoreJob: Job? = null
-    private var reconnectAttempt = 0
-    private var streamGeneration = 0
+    @Volatile private var streamGeneration = 0
     private var followedThreadId: String? = null
+    private var mediaCacheKey = ""
+    private val mediaCache = TaskMediaCache(File(applicationContext.cacheDir, "task_media"))
+    private val mediaJobs = mutableMapOf<String, Job>()
 
     fun restoreAndStart(startService: Boolean = true) {
         if (api != null) {
@@ -51,13 +62,19 @@ class RemoteRepository private constructor(context: Context) {
         }
     }
 
-    fun pair(serverUrl: String, code: String, deviceName: String) {
+    fun pair(serverUrl: String, code: String, deviceName: String, connectionName: String = "") {
         scope.launch {
             update { it.copy(loading = true, error = null) }
             runCatching {
                 val normalized = BridgeEndpoint.normalize(serverUrl)
                 val response = BridgeApi(normalized, null).pair(code.trim(), deviceName.trim())
-                val saved = StoredConnection(normalized, response.deviceId, response.token)
+                val label = connectionName.trim()
+                val saved = if (label.isBlank()) {
+                    StoredConnection(normalized, response.deviceId, response.token)
+                } else {
+                    StoredConnection(normalized, response.deviceId, response.token, label)
+                }
+                pendingReviewStore.clear()
                 store.save(saved)
                 configure(saved)
                 openStream()
@@ -72,8 +89,70 @@ class RemoteRepository private constructor(context: Context) {
         scheduleRefresh(0)
     }
 
+    fun refreshModels() {
+        val bridge = api ?: return
+        scope.launch {
+            runCatching { bridge.models(refresh = true) }
+                .onSuccess { models -> if (api === bridge) update { it.copy(models = models) } }
+                .onFailure(::recordError)
+        }
+    }
+
+    fun addServerUrl(name: String, serverUrl: String) {
+        scope.launch {
+            update { it.copy(loading = true, error = null) }
+            runCatching {
+                val normalized = BridgeEndpoint.normalize(serverUrl)
+                val saved = requireNotNull(store.addServerUrl(name, normalized)) { "当前没有可复用的配对凭据" }
+                activateConnection(saved)
+            }.onFailure(::recordError)
+            update { it.copy(loading = false) }
+        }
+    }
+
+    fun switchServerUrl(serverUrl: String) {
+        if (serverUrl == mutableState.value.serverUrl) return
+        scope.launch {
+            update { it.copy(loading = true, error = null) }
+            runCatching {
+                val saved = requireNotNull(store.selectServerUrl(serverUrl)) { "找不到已保存的连接地址" }
+                activateConnection(saved)
+            }.onFailure(::recordError)
+            update { it.copy(loading = false) }
+        }
+    }
+
+    fun removeServerUrl(serverUrl: String) {
+        val snapshot = mutableState.value
+        if (snapshot.serverAddresses.size <= 1) {
+            update { it.copy(error = "至少需要保留一个连接地址") }
+            return
+        }
+        scope.launch {
+            update { it.copy(loading = true, error = null) }
+            runCatching {
+                val saved = requireNotNull(store.removeServerUrl(serverUrl)) { "当前没有已保存的连接" }
+                if (saved.serverUrl != snapshot.serverUrl) activateConnection(saved)
+                else update { it.copy(serverAddresses = store.serverAddresses()) }
+            }.onFailure(::recordError)
+            update { it.copy(loading = false) }
+        }
+    }
+
     fun select(threadId: String) {
-        update { it.copy(selectedThreadId = threadId, taskDetail = null) }
+        cancelMediaLoads()
+        markTaskViewed(threadId)
+        update {
+            it.copy(
+                selectedThreadId = threadId,
+                taskDetail = null,
+                taskMediaById = emptyMap(),
+                loadingTaskMediaIds = emptySet(),
+                failedTaskMediaIds = emptySet(),
+                workspaceFiles = emptyList(),
+                workspaceFilesLoading = false,
+            )
+        }
         scope.launch {
             update { it.copy(loading = true, error = null) }
             val followFailure = runCatching {
@@ -87,6 +166,95 @@ class RemoteRepository private constructor(context: Context) {
                 }
             }
             update { it.copy(loading = false) }
+        }
+    }
+
+    fun markTaskViewed(threadId: String) {
+        val remaining = pendingReviewStore.markViewed(threadId)
+        update { it.copy(completedReviewThreadIds = remaining) }
+    }
+
+    fun openTaskResource(threadId: String, resource: TimelineResourceDto) {
+        if (resource.resourceId in mutableState.value.downloadingResourceIds) return
+        scope.launch {
+            update {
+                it.copy(
+                    downloadingResourceIds = it.downloadingResourceIds + resource.resourceId,
+                    error = null,
+                )
+            }
+            runCatching {
+                val bytes = requireApi().taskResource(threadId, resource.resourceId)
+                val directory = File(applicationContext.cacheDir, "remote_files").apply { mkdirs() }
+                val safeName = resource.name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
+                    .ifBlank { "download" }
+                val file = File(directory, "${resource.resourceId.take(12)}-$safeName")
+                file.writeBytes(bytes)
+                val uri = FileProvider.getUriForFile(
+                    applicationContext,
+                    "${applicationContext.packageName}.files",
+                    file,
+                )
+                val viewIntent = Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, resource.mimeType)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                applicationContext.startActivity(viewIntent)
+            }.onFailure(::recordError)
+            update {
+                it.copy(downloadingResourceIds = it.downloadingResourceIds - resource.resourceId)
+            }
+        }
+    }
+
+    fun loadWorkspaceFiles(threadId: String, query: String = "") {
+        scope.launch {
+            update { it.copy(workspaceFilesLoading = true, error = null) }
+            runCatching { requireApi().workspaceFiles(threadId, query) }
+                .onSuccess { files -> update { it.copy(workspaceFiles = files) } }
+                .onFailure(::recordError)
+            update { it.copy(workspaceFilesLoading = false) }
+        }
+    }
+
+    fun addWorkspaceAttachment(threadId: String, file: WorkspaceFileDto) {
+        val existing = mutableState.value.attachmentsByThread[threadId].orEmpty()
+        if (existing.size >= MAX_COMPOSER_ATTACHMENTS) {
+            update { it.copy(error = "每条消息最多添加 $MAX_COMPOSER_ATTACHMENTS 个附件") }
+            return
+        }
+        val pending = ComposerAttachment(
+            localId = UUID.randomUUID().toString(),
+            uri = "",
+            name = file.name,
+            mimeType = file.mimeType,
+            size = file.size,
+            uploadState = AttachmentUploadState.UPLOADING,
+        )
+        update { state ->
+            state.copy(
+                attachmentsByThread = state.attachmentsByThread +
+                    (threadId to (state.attachmentsByThread[threadId].orEmpty() + pending)),
+                error = null,
+            )
+        }
+        scope.launch {
+            runCatching { requireApi().importWorkspaceAttachment(threadId, file.relativePath) }
+                .onSuccess { uploaded ->
+                    replaceAttachment(threadId, pending.localId) {
+                        it.copy(
+                            uploadState = AttachmentUploadState.READY,
+                            attachmentId = uploaded.attachmentId,
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    replaceAttachment(threadId, pending.localId) {
+                        it.copy(
+                            uploadState = AttachmentUploadState.FAILED,
+                            error = error.message ?: "电脑文件读取失败",
+                        )
+                    }
+                }
         }
     }
 
@@ -187,7 +355,7 @@ class RemoteRepository private constructor(context: Context) {
 
     fun createTask(draft: CreateTaskDraft, onCreated: (() -> Unit)? = null) {
         if (!mutableState.value.capabilities.newTask) {
-            update { it.copy(taskCreationError = "当前 Codex Desktop 版本尚未开放远程新建任务") }
+            update { it.copy(taskCreationError = "当前连接暂不支持远程新建任务") }
             return
         }
         scope.launch {
@@ -331,18 +499,19 @@ class RemoteRepository private constructor(context: Context) {
 
     fun disconnect() {
         val previousApi = api
+        streamGeneration += 1
+        cancelMediaLoads()
         stream?.cancel()
         stream = null
-        reconnectJob?.cancel()
-        reconnectJob = null
+        reconnectScheduler.reset()
         refreshCoordinator?.dispose()
         refreshCoordinator = null
         restoreJob?.cancel()
         restoreJob = null
-        streamGeneration += 1
         followedThreadId = null
         api = null
         store.clear()
+        pendingReviewStore.clear()
         applicationContext.stopService(Intent(applicationContext, RemoteService::class.java))
         mutableState.value = RemoteState()
         scope.launch { runCatching { previousApi?.revokeSelf() } }
@@ -354,15 +523,39 @@ class RemoteRepository private constructor(context: Context) {
             runCatching { refreshNow() }.onFailure(::recordError)
         }
         api = BridgeApi(saved.serverUrl, saved.token)
-        update { it.copy(configured = true, serverUrl = saved.serverUrl, error = null) }
+        mediaCacheKey = saved.deviceId
+        update {
+            it.copy(
+                configured = true,
+                serverUrl = saved.serverUrl,
+                serverAddresses = store.serverAddresses(),
+                error = null,
+            )
+        }
+    }
+
+    private suspend fun activateConnection(saved: StoredConnection) {
+        streamGeneration += 1
+        cancelMediaLoads()
+        stream?.cancel()
+        stream = null
+        reconnectScheduler.reset()
+        refreshCoordinator?.dispose()
+        refreshCoordinator = null
+        followedThreadId = null
+        api = null
+        configure(saved)
+        openStream()
+        refreshNow()
     }
 
     private fun openStream() {
-        reconnectJob?.cancel()
-        reconnectJob = null
+        val bridge = api ?: return
+        reconnectScheduler.cancel()
         val generation = ++streamGeneration
         stream?.cancel()
-        stream = requireApi().stream(
+        update { it.copy(connected = false) }
+        stream = bridge.stream(
             onEvent = {
                 if (generation == streamGeneration) scheduleRefresh(150)
             },
@@ -370,27 +563,14 @@ class RemoteRepository private constructor(context: Context) {
                 if (generation != streamGeneration) return@stream
                 update { it.copy(connected = connected) }
                 if (connected) {
-                    reconnectAttempt = 0
+                    reconnectScheduler.reset()
                     scheduleRefresh(0)
                 } else {
                     followedThreadId = null
-                    scheduleReconnect(generation)
+                    reconnectScheduler.schedule()
                 }
             },
         )
-    }
-
-    private fun scheduleReconnect(generation: Int) {
-        if (reconnectJob?.isActive == true) return
-        reconnectJob = scope.launch {
-            val delayMs = minOf(30_000L, 1_000L shl minOf(reconnectAttempt, 5))
-            reconnectAttempt += 1
-            delay(delayMs)
-            if (generation == streamGeneration && api != null) {
-                openStream()
-                runCatching { refreshNow() }.onFailure(::recordError)
-            }
-        }
     }
 
     private suspend fun refreshNow() {
@@ -409,6 +589,8 @@ class RemoteRepository private constructor(context: Context) {
         val models = runCatching { bridge.models() }.getOrDefault(emptyList())
         val tasks = bridge.tasks()
         val approvals = bridge.approvals()
+        if (api !== bridge) return
+        val completedReviewThreadIds = pendingReviewStore.observe(tasks)
         val current = mutableState.value
         val selectedThreadId = current.selectedThreadId
             ?.takeIf { selected -> tasks.any { it.threadId == selected } }
@@ -420,12 +602,15 @@ class RemoteRepository private constructor(context: Context) {
         val queue = if (selectedThreadId != null && capabilities.queue) {
             runCatching { bridge.queue(selectedThreadId) }.getOrNull()
         } else null
+        val visibleMediaIds = detail?.items?.mapNotNull { it.media?.mediaId }?.toSet().orEmpty()
+        if (api !== bridge) return
         update { current ->
             current.copy(
                 configured = true,
                 tasks = tasks,
                 taskDetail = detail,
                 approvals = approvals,
+                completedReviewThreadIds = completedReviewThreadIds,
                 selectedThreadId = selectedThreadId,
                 writeSupported = health.compatibility.supported,
                 compatibilityVerified = health.compatibility.verified,
@@ -439,8 +624,71 @@ class RemoteRepository private constructor(context: Context) {
                 queueHashByThread = if (selectedThreadId != null && queue != null) {
                     current.queueHashByThread + (selectedThreadId to queue.hash)
                 } else current.queueHashByThread,
+                taskMediaById = current.taskMediaById.filterKeys { it in visibleMediaIds },
+                loadingTaskMediaIds = current.loadingTaskMediaIds.filterTo(mutableSetOf()) {
+                    it in visibleMediaIds
+                },
+                failedTaskMediaIds = current.failedTaskMediaIds.filterTo(mutableSetOf()) {
+                    it in visibleMediaIds
+                },
                 error = null,
             )
+        }
+    }
+
+    fun loadTaskMedia(threadId: String, mediaId: String) {
+        val snapshot = mutableState.value
+        if (snapshot.selectedThreadId != threadId || snapshot.taskMediaById[mediaId]?.isFile == true) return
+        val bridge = api ?: return
+        val cacheKey = "$mediaCacheKey:$threadId:$mediaId"
+        synchronized(mediaJobs) {
+            if (mediaJobs[mediaId]?.isActive == true) return
+            val job = scope.launch(start = CoroutineStart.LAZY) {
+                update {
+                    it.copy(
+                        loadingTaskMediaIds = it.loadingTaskMediaIds + mediaId,
+                        failedTaskMediaIds = it.failedTaskMediaIds - mediaId,
+                    )
+                }
+                try {
+                    val file = mediaCache.load(cacheKey) { bridge.taskMedia(threadId, mediaId, it) }
+                    if (api === bridge) {
+                        update { state ->
+                            val stillVisible = state.selectedThreadId == threadId &&
+                                state.taskDetail?.items?.any {
+                                    it.media?.mediaId == mediaId
+                                } == true
+                            state.copy(
+                                taskMediaById = if (stillVisible) {
+                                    state.taskMediaById + (mediaId to file)
+                                } else state.taskMediaById,
+                                failedTaskMediaIds = state.failedTaskMediaIds - mediaId,
+                            )
+                        }
+                    }
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    if (api === bridge && mutableState.value.selectedThreadId == threadId) {
+                        update { it.copy(failedTaskMediaIds = it.failedTaskMediaIds + mediaId) }
+                    }
+                } finally {
+                    synchronized(mediaJobs) {
+                        if (mediaJobs[mediaId] == coroutineContext[Job]) {
+                            mediaJobs.remove(mediaId)
+                            update { it.copy(loadingTaskMediaIds = it.loadingTaskMediaIds - mediaId) }
+                        }
+                    }
+                }
+            }
+            mediaJobs[mediaId] = job
+            job.start()
+        }
+    }
+
+    private fun cancelMediaLoads() {
+        synchronized(mediaJobs) {
+            mediaJobs.values.forEach(Job::cancel)
+            mediaJobs.clear()
         }
     }
 
@@ -462,7 +710,7 @@ class RemoteRepository private constructor(context: Context) {
         if (error is CancellationException) return
         update { it.copy(error = error.message) }
     }
-    private fun update(block: (RemoteState) -> RemoteState) { mutableState.value = block(mutableState.value) }
+    private fun update(block: (RemoteState) -> RemoteState) { mutableState.update(block) }
 
     private fun scheduleRefresh(delayMs: Long) {
         refreshCoordinator?.request(delayMs)

@@ -19,6 +19,7 @@ class RemoteService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var approvalJob: Job? = null
     private val shownApprovals = mutableSetOf<String>()
+    private val shownCompletedThreads = mutableSetOf<String>()
 
     override fun onCreate() {
         super.onCreate()
@@ -28,6 +29,9 @@ class RemoteService : Service() {
         )
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL_APPROVALS, "Codex approvals", NotificationManager.IMPORTANCE_HIGH),
+        )
+        manager.createNotificationChannel(
+            NotificationChannel(CHANNEL_COMPLETIONS, "Codex completions", NotificationManager.IMPORTANCE_DEFAULT),
         )
         startForeground(
             CONNECTION_NOTIFICATION,
@@ -40,8 +44,7 @@ class RemoteService : Service() {
                 val connectionText = when {
                     !state.connected -> "手机与 Bridge 连接中断"
                     !state.ipcConnected -> "Bridge 已连接，Codex Desktop 未连接"
-                    !state.writeSupported -> "桌面版本不兼容，仅查看"
-                    !state.compatibilityVerified -> "Codex 版本已更新，正在兼容模式运行"
+                    state.desktopVersion != null -> "Codex Desktop ${state.desktopVersion} 已连接"
                     else -> "正在监听当前 Codex 任务"
                 }
                 manager.notify(CONNECTION_NOTIFICATION, connectionNotification(connectionText))
@@ -57,6 +60,25 @@ class RemoteService : Service() {
                                 .setSmallIcon(android.R.drawable.stat_sys_warning)
                                 .setContentTitle("Codex 需要确认")
                                 .setContentText(approval.method.substringAfterLast('/'))
+                                .setContentIntent(openAppIntent())
+                                .setAutoCancel(true)
+                                .build(),
+                        )
+                    }
+                }
+                val completedIds = state.completedReviewThreadIds
+                val viewedIds = shownCompletedThreads.filterNot(completedIds::contains)
+                viewedIds.forEach { threadId -> manager.cancel(completionNotificationId(threadId)) }
+                shownCompletedThreads.removeAll(viewedIds.toSet())
+                for (threadId in completedIds) {
+                    if (shownCompletedThreads.add(threadId)) {
+                        val task = state.tasks.firstOrNull { it.threadId == threadId }
+                        manager.notify(
+                            completionNotificationId(threadId),
+                            NotificationCompat.Builder(this@RemoteService, CHANNEL_COMPLETIONS)
+                                .setSmallIcon(android.R.drawable.stat_notify_chat)
+                                .setContentTitle(if (task?.status == "failed") "Codex 任务运行失败" else "Codex 任务已完成")
+                                .setContentText(task?.title ?: "点击查看结果")
                                 .setContentIntent(openAppIntent())
                                 .setAutoCancel(true)
                                 .build(),
@@ -89,9 +111,14 @@ class RemoteService : Service() {
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 
+    private fun completionNotificationId(threadId: String): Int =
+        COMPLETION_NOTIFICATION_BASE xor threadId.hashCode()
+
     companion object {
         private const val CHANNEL_CONNECTION = "codex_connection"
         private const val CHANNEL_APPROVALS = "codex_approvals"
+        private const val CHANNEL_COMPLETIONS = "codex_completions"
         private const val CONNECTION_NOTIFICATION = 1001
+        private const val COMPLETION_NOTIFICATION_BASE = 0x434F4445
     }
 }

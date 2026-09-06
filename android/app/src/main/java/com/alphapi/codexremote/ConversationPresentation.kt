@@ -107,12 +107,7 @@ private fun presentCommand(text: String): ActivityPresentation {
 
 private fun presentFiles(text: String): ActivityPresentation {
     val paths = text.lines().map(String::trim).filter(String::isNotBlank)
-    val title = when (paths.size) {
-        0 -> "文件已更新"
-        1 -> "更新 ${paths.first().substringAfterLast('/').substringAfterLast('\\')}"
-        else -> "更新 ${paths.size} 个文件"
-    }
-    return ActivityPresentation(title, paths.joinToString("\n"))
+    return ActivityPresentation("正在编辑文件", paths.joinToString("\n"))
 }
 
 internal fun activityTitle(kind: String): String = when (kind) {

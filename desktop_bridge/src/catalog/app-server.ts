@@ -13,20 +13,37 @@ type Pending = {
   timer: NodeJS.Timeout;
 };
 
+type AppServerProcessFactory = (
+  executable: string,
+  args: string[],
+) => ChildProcessWithoutNullStreams;
+
+type AppServerExecutable = string | (() => string | Promise<string>);
+
+const MODEL_CACHE_TTL_MS = 30_000;
+const MODEL_PROCESS_MAX_AGE_MS = 5 * 60_000;
+
 export class AppServerCatalog implements TaskCatalogPort {
   private process: ChildProcessWithoutNullStreams | null = null;
   private incoming = "";
   private readonly pending = new Map<string, Pending>();
   private starting: Promise<void> | null = null;
+  private processStartedAt = 0;
+  private modelCache: {
+    expiresAt: number;
+    models: Array<Record<string, unknown>>;
+  } | null = null;
 
   constructor(
-    private readonly executable: string,
+    private readonly executable: AppServerExecutable,
     private readonly timeoutMs = 10_000,
+    private readonly processFactory: AppServerProcessFactory = spawnAppServer,
+    private readonly now: () => number = Date.now,
   ) {}
 
   async start(): Promise<void> {
-    if (this.process) return;
     if (this.starting) return this.starting;
+    if (this.process?.stdin.writable) return;
     this.starting = this.spawnAndInitialize().finally(() => {
       this.starting = null;
     });
@@ -59,48 +76,118 @@ export class AppServerCatalog implements TaskCatalogPort {
     return isRecord(result.thread) ? result.thread : null;
   }
 
-  async listModels(): Promise<Array<Record<string, unknown>>> {
-    const result = await this.readRequest("model/list", {});
-    return Array.isArray(result.data)
-      ? result.data.filter(isRecord).map(normalizeModelDescriptor).filter(isRecord)
-      : [];
+  async listModels(refresh = false): Promise<Array<Record<string, unknown>>> {
+    const now = this.now();
+    if (!refresh && this.modelCache && this.modelCache.expiresAt > now) {
+      return structuredClone(this.modelCache.models);
+    }
+    if (
+      this.process &&
+      !this.starting &&
+      this.pending.size === 0 &&
+      (refresh || now - this.processStartedAt >= MODEL_PROCESS_MAX_AGE_MS)
+    ) {
+      this.retire(this.process, new Error("app-server-model-refresh"));
+    }
+    const models: Array<Record<string, unknown>> = [];
+    const modelIds = new Set<string>();
+    const cursors = new Set<string>();
+    let cursor: string | null = null;
+    for (;;) {
+      const result = await this.readRequest("model/list", {
+        limit: 100,
+        ...(cursor ? { cursor } : {}),
+      });
+      const page = Array.isArray(result.data)
+        ? result.data.filter(isRecord).map(normalizeModelDescriptor).filter(isRecord)
+        : [];
+      for (const model of page) {
+        const id = readString(model.id);
+        if (!id || modelIds.has(id)) continue;
+        modelIds.add(id);
+        models.push(model);
+      }
+      const nextCursor = readString(result.nextCursor);
+      if (!nextCursor) {
+        this.modelCache = {
+          expiresAt: this.now() + MODEL_CACHE_TTL_MS,
+          models: structuredClone(models),
+        };
+        return models;
+      }
+      if (cursors.has(nextCursor)) throw new Error("app-server-model-cursor-cycle");
+      cursors.add(nextCursor);
+      cursor = nextCursor;
+    }
   }
 
   dispose(): void {
-    this.rejectAll(new Error("app-server-catalog-disposed"));
-    this.process?.kill();
-    this.process = null;
+    this.modelCache = null;
+    const error = new Error("app-server-catalog-disposed");
+    const child = this.process;
+    if (child) this.retire(child, error);
+    else this.rejectAll(error);
   }
 
   private async spawnAndInitialize(): Promise<void> {
-    const child = spawn(this.executable, ["app-server", "--listen", "stdio://"], {
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
+    const executable = typeof this.executable === "string"
+      ? this.executable
+      : await this.executable();
+    const child = this.processFactory(
+      executable,
+      ["app-server", "--listen", "stdio://"],
+    );
     this.process = child;
+    this.processStartedAt = this.now();
+    this.incoming = "";
     child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => this.handleData(chunk));
+    child.stdout.on("data", (chunk: string) => this.handleData(child, chunk));
     child.stderr.on("data", () => undefined);
+    child.on("error", (error) => this.retire(child, error, false));
     child.on("exit", () => {
-      if (this.process === child) this.process = null;
-      this.rejectAll(new Error("app-server-catalog-exited"));
+      this.retire(child, new Error("app-server-catalog-exited"), false);
     });
-    await this.sendRequest("initialize", {
-      clientInfo: {
-        name: "codex-desktop-android-remote",
-        title: "Codex Desktop Android Remote",
-        version: "0.1.0",
-      },
-    });
-    child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
+    try {
+      await this.sendRequest("initialize", {
+        clientInfo: {
+          name: "codex-desktop-android-remote",
+          title: "Codex Desktop Android Remote",
+          version: "0.1.0",
+        },
+      });
+      if (this.process !== child || !child.stdin.writable) {
+        throw new Error("app-server-not-running");
+      }
+      child.stdin.write(`${JSON.stringify({ method: "initialized", params: {} })}\n`);
+    } catch (error) {
+      const failure = toError(error);
+      this.retire(child, failure);
+      throw failure;
+    }
   }
 
   private async readRequest(
     method: "thread/list" | "thread/read" | "model/list",
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    await this.start();
-    return this.sendRequest(method, params);
+    let lastError = new Error("app-server-not-running");
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        await this.start();
+      } catch (error) {
+        lastError = toError(error);
+        if (attempt === 0) continue;
+        throw lastError;
+      }
+      try {
+        return await this.sendRequest(method, params);
+      } catch (error) {
+        lastError = toError(error);
+        if (attempt === 0 && isRecoverable(lastError)) continue;
+        throw lastError;
+      }
+    }
+    throw lastError;
   }
 
   private sendRequest(
@@ -113,14 +200,25 @@ export class AppServerCatalog implements TaskCatalogPort {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`app-server-timeout:${method}`));
+        const error = new Error(`app-server-timeout:${method}`);
+        this.retire(child, error);
+        reject(error);
       }, this.timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
-      child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+      try {
+        child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        const failure = toError(error);
+        this.retire(child, failure);
+        reject(failure);
+      }
     });
   }
 
-  private handleData(chunk: string): void {
+  private handleData(child: ChildProcessWithoutNullStreams, chunk: string): void {
+    if (this.process !== child) return;
     this.incoming += chunk;
     for (;;) {
       const newline = this.incoming.indexOf("\n");
@@ -147,6 +245,19 @@ export class AppServerCatalog implements TaskCatalogPort {
     }
   }
 
+  private retire(
+    child: ChildProcessWithoutNullStreams,
+    error: Error,
+    kill = true,
+  ): void {
+    if (this.process !== child) return;
+    this.process = null;
+    this.processStartedAt = 0;
+    this.incoming = "";
+    this.rejectAll(error);
+    if (kill && !child.killed) child.kill();
+  }
+
   private rejectAll(error: Error): void {
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timer);
@@ -154,6 +265,26 @@ export class AppServerCatalog implements TaskCatalogPort {
       this.pending.delete(id);
     }
   }
+}
+
+function spawnAppServer(
+  executable: string,
+  args: string[],
+): ChildProcessWithoutNullStreams {
+  return spawn(executable, args, {
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  });
+}
+
+function isRecoverable(error: Error): boolean {
+  return error.message.startsWith("app-server-timeout:") ||
+    error.message === "app-server-not-running" ||
+    error.message === "app-server-catalog-exited";
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 function normalizeLimit(value: number | undefined): number {

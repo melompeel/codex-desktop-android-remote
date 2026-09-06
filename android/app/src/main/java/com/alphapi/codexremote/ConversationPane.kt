@@ -1,5 +1,7 @@
 package com.alphapi.codexremote
 
+import android.graphics.Bitmap
+import java.io.File
 import android.net.Uri
 import android.content.Intent
 import android.text.method.LinkMovementMethod
@@ -11,6 +13,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -22,6 +25,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -41,14 +46,17 @@ import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.FilterChip
@@ -59,11 +67,13 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -71,6 +81,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -82,10 +94,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import io.noties.markwon.Markwon
 import io.noties.markwon.AbstractMarkwonPlugin
 import io.noties.markwon.MarkwonConfiguration
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 
 @Composable
@@ -98,6 +114,11 @@ internal fun TaskConversationPane(
     queued: List<QueuedFollowUpDto>,
     queueReady: Boolean,
     attachments: List<ComposerAttachment>,
+    taskMediaById: Map<String, File> = emptyMap(),
+    loadingTaskMediaIds: Set<String> = emptySet(),
+    failedTaskMediaIds: Set<String> = emptySet(),
+    workspaceFiles: List<WorkspaceFileDto> = emptyList(),
+    workspaceFilesLoading: Boolean = false,
     models: List<ModelOptionDto>,
     capabilities: RemoteCapabilitiesDto,
     sending: Boolean,
@@ -110,7 +131,12 @@ internal fun TaskConversationPane(
     onOpenSettings: () -> Unit,
     onAttachmentsSelected: (List<Uri>) -> Unit,
     onRemoveAttachment: (String) -> Unit,
+    onOpenResource: (TimelineResourceDto) -> Unit = {},
+    onLoadWorkspaceFiles: (String) -> Unit = {},
+    onWorkspaceFileSelected: (WorkspaceFileDto) -> Unit = {},
+    onLoadTaskMedia: (String) -> Unit = {},
 ) {
+    var showWorkspaceFiles by rememberSaveable { mutableStateOf(false) }
     val imagePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(5),
         onAttachmentsSelected,
@@ -131,7 +157,14 @@ internal fun TaskConversationPane(
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
                 detail == null -> CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp))
-                else -> ConversationTimeline(detail)
+                else -> ConversationTimeline(
+                    detail,
+                    taskMediaById,
+                    loadingTaskMediaIds,
+                    failedTaskMediaIds,
+                    onOpenResource,
+                    onLoadTaskMedia,
+                )
             }
         }
         if (queued.isNotEmpty()) {
@@ -163,7 +196,23 @@ internal fun TaskConversationPane(
                 imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
             },
             onPickFiles = { filePicker.launch(arrayOf("*/*")) },
+            onPickRemoteFiles = {
+                showWorkspaceFiles = true
+                onLoadWorkspaceFiles("")
+            },
             onRemoveAttachment = onRemoveAttachment,
+        )
+    }
+    if (showWorkspaceFiles) {
+        WorkspaceFilePickerDialog(
+            files = workspaceFiles,
+            loading = workspaceFilesLoading,
+            onSearch = onLoadWorkspaceFiles,
+            onSelect = {
+                onWorkspaceFileSelected(it)
+                showWorkspaceFiles = false
+            },
+            onDismiss = { showWorkspaceFiles = false },
         )
     }
 }
@@ -208,13 +257,28 @@ private fun ConnectionBanner(text: String) {
 }
 
 @Composable
-private fun ConversationTimeline(detail: TaskDetailDto) {
+private fun ConversationTimeline(
+    detail: TaskDetailDto,
+    taskMediaById: Map<String, File>,
+    loadingTaskMediaIds: Set<String>,
+    failedTaskMediaIds: Set<String>,
+    onOpenResource: (TimelineResourceDto) -> Unit,
+    onLoadTaskMedia: (String) -> Unit,
+) {
     val context = LocalContext.current
-    val markwon = remember(context) {
+    val resourcesById = remember(detail.items) {
+        detail.items.flatMap { it.resources }.associateBy { it.resourceId }
+    }
+    val markwon = remember(context, resourcesById, onOpenResource) {
         Markwon.builder(context)
             .usePlugin(object : AbstractMarkwonPlugin() {
                 override fun configureConfiguration(builder: MarkwonConfiguration.Builder) {
                     builder.linkResolver { view, link ->
+                        if (link.startsWith("codexremote://resource/")) {
+                            val resourceId = link.substringAfterLast('/')
+                            resourcesById[resourceId]?.let(onOpenResource)
+                            return@linkResolver
+                        }
                         if (!isAllowedExternalLink(link)) return@linkResolver
                         runCatching {
                             val intent = Intent.createChooser(
@@ -273,7 +337,14 @@ private fun ConversationTimeline(detail: TaskDetailDto) {
             ) { index, item ->
                 val startsTurn = index == 0 || detail.items[index - 1].turnId != item.turnId
                 Spacer(Modifier.height(if (startsTurn) 18.dp else 8.dp))
-                ConversationEntry(item, markwon)
+                ConversationEntry(
+                    item,
+                    markwon,
+                    taskMediaById[item.media?.mediaId],
+                    item.media?.mediaId in loadingTaskMediaIds,
+                    item.media?.mediaId in failedTaskMediaIds,
+                    onLoadTaskMedia,
+                )
             }
             if (detail.status == "active") {
                 item("working") {
@@ -299,13 +370,120 @@ private fun ConversationTimeline(detail: TaskDetailDto) {
 }
 
 @Composable
-private fun ConversationEntry(item: TimelineItemDto, markwon: Markwon) {
+private fun ConversationEntry(
+    item: TimelineItemDto,
+    markwon: Markwon,
+    mediaFile: File?,
+    mediaLoading: Boolean,
+    mediaFailed: Boolean,
+    onLoadTaskMedia: (String) -> Unit,
+) {
     when (item.kind) {
         "user" -> UserMessage(item.text)
         "assistant" -> AssistantMessage(item.text, markwon)
         "plan" -> PlanMessage(item.text, markwon)
+        "image" -> TimelineImage(item.media, mediaFile, mediaLoading, mediaFailed, onLoadTaskMedia)
         "command", "file" -> ActivityDisclosure(item)
         else -> ProgressMessage(item.text, markwon)
+    }
+}
+
+@Composable
+private fun TimelineImage(
+    media: TimelineMediaDto?,
+    file: File?,
+    loading: Boolean,
+    failed: Boolean,
+    onLoadTaskMedia: (String) -> Unit,
+) {
+    if (media == null) return
+    LaunchedEffect(media.mediaId, file) {
+        if (file?.isFile != true) onLoadTaskMedia(media.mediaId)
+    }
+    val bitmap = produceState<Bitmap?>(initialValue = null, file) {
+        value = withContext(Dispatchers.IO) { file?.let(::decodeTaskImage) }
+    }.value
+    var expanded by rememberSaveable(media.mediaId) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
+        Text(
+            "Codex 图片",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(bottom = 6.dp),
+        )
+        Surface(
+            color = Color(0xFFF0F0ED),
+            shape = MaterialTheme.shapes.small,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            when {
+                bitmap != null -> Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = media.name,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(bitmap.width.toFloat() / bitmap.height.coerceAtLeast(1))
+                        .heightIn(max = 420.dp)
+                        .clickable { expanded = true }
+                        .testTag("timelineImage:${media.mediaId}"),
+                )
+                failed -> Box(
+                    Modifier.fillMaxWidth().height(140.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    TextButton(onClick = { onLoadTaskMedia(media.mediaId) }) {
+                        Text("重试加载图片", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+                loading -> Box(
+                    Modifier.fillMaxWidth().height(140.dp),
+                    contentAlignment = Alignment.Center,
+                ) { CircularProgressIndicator(Modifier.size(24.dp)) }
+                else -> Box(
+                    Modifier.fillMaxWidth().height(140.dp),
+                    contentAlignment = Alignment.Center,
+                ) { Text("正在准备图片", color = Color(0xFF777772)) }
+            }
+        }
+        Text(
+            media.name,
+            modifier = Modifier.padding(top = 5.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = Color(0xFF666661),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+    if (expanded && bitmap != null) {
+        Dialog(
+            onDismissRequest = { expanded = false },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false,
+            ),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color(0xEE101010))
+                    .clickable { expanded = false },
+            ) {
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = media.name,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize().padding(16.dp),
+                )
+                IconButton(
+                    onClick = { expanded = false },
+                    modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
+                ) {
+                    Icon(Icons.Default.Close, "关闭图片", tint = Color.White)
+                }
+            }
+        }
     }
 }
 
@@ -541,6 +719,7 @@ private fun MessageComposer(
     onOpenSettings: () -> Unit,
     onPickImages: () -> Unit,
     onPickFiles: () -> Unit,
+    onPickRemoteFiles: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
 ) {
     Surface(
@@ -595,6 +774,9 @@ private fun MessageComposer(
                     IconButton(onClick = onPickFiles, modifier = Modifier.size(40.dp)) {
                         Icon(Icons.Default.AttachFile, "选择文件", modifier = Modifier.size(20.dp))
                     }
+                    IconButton(onClick = onPickRemoteFiles, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.Computer, "选择电脑文件", modifier = Modifier.size(20.dp))
+                    }
                 }
                 if (settingsEnabled) {
                     AssistChip(
@@ -629,6 +811,74 @@ private fun MessageComposer(
 }
 
 @Composable
+private fun WorkspaceFilePickerDialog(
+    files: List<WorkspaceFileDto>,
+    loading: Boolean,
+    onSearch: (String) -> Unit,
+    onSelect: (WorkspaceFileDto) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var query by rememberSaveable { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("电脑文件") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    label = { Text("搜索当前任务目录") },
+                    singleLine = true,
+                    trailingIcon = {
+                        IconButton(onClick = { onSearch(query) }) {
+                            Icon(Icons.Default.Search, "搜索")
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                when {
+                    loading -> Box(
+                        Modifier.fillMaxWidth().height(180.dp),
+                        contentAlignment = Alignment.Center,
+                    ) { CircularProgressIndicator(Modifier.size(24.dp)) }
+                    files.isEmpty() -> Box(
+                        Modifier.fillMaxWidth().height(120.dp),
+                        contentAlignment = Alignment.Center,
+                    ) { Text("没有可添加的文件", color = Color(0xFF777772)) }
+                    else -> LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
+                        items(files, key = { it.relativePath }) { file ->
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onSelect(file) }
+                                    .padding(vertical = 10.dp),
+                            ) {
+                                Text(
+                                    file.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    "${file.relativePath} · ${formatBytes(file.size)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFF666661),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            HorizontalDivider(color = Color(0xFFE5E5E0))
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
+}
+
+@Composable
 private fun AttachmentPreviewRow(
     attachments: List<ComposerAttachment>,
     onRemove: (String) -> Unit,
@@ -644,7 +894,7 @@ private fun AttachmentPreviewRow(
                 modifier = Modifier.widthIn(min = 120.dp, max = 210.dp),
             ) {
                 Row(Modifier.padding(start = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (attachment.mimeType.startsWith("image/")) {
+                    if (attachment.mimeType.startsWith("image/") && attachment.uri.isNotBlank()) {
                         AndroidView(
                             factory = { context -> ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP } },
                             update = { it.setImageURI(Uri.parse(attachment.uri)) },

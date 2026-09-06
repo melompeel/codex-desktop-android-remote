@@ -1,12 +1,33 @@
+import { createHash } from "node:crypto";
+import { basename, extname, isAbsolute } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import type { ThreadStream } from "./store.js";
+
+export type TimelineMedia = {
+  mediaId: string;
+  name: string;
+  mimeType: string;
+};
+
+export type TimelineResource = {
+  resourceId: string;
+  name: string;
+  mimeType: string;
+};
 
 export type TimelineItem = {
   id: string;
   turnId: string;
-  kind: "user" | "assistant" | "command" | "file" | "plan" | "status";
+  kind: "user" | "assistant" | "command" | "file" | "plan" | "status" | "image";
   text: string;
   status?: string;
+  media?: TimelineMedia;
+  resources?: TimelineResource[];
 };
+
+export type ThreadMediaFile = TimelineMedia & { fsPath: string };
+export type ThreadResourceFile = TimelineResource & { fsPath: string };
 
 export type TaskDetail = {
   threadId: string;
@@ -76,8 +97,9 @@ export function presentThread(thread: ThreadStream): TaskDetail {
     for (let itemIndex = 0; itemIndex < rawItems.length; itemIndex += 1) {
       const item = asRecord(rawItems[itemIndex]);
       if (!item) continue;
-      const presented = presentItem(item, turnId, itemIndex, turnStatus);
-      if (presented) items.push(presented);
+      items.push(
+        ...presentItems(thread.threadId, item, turnId, itemIndex, turnStatus),
+      );
     }
   }
   return {
@@ -178,25 +200,49 @@ function orderedTurns(state: Record<string, unknown>): unknown[] {
   return turns;
 }
 
-function presentItem(
+function presentItems(
+  threadId: string,
   item: Record<string, unknown>,
   turnId: string,
   index: number,
   turnStatus: string,
-): TimelineItem | null {
+): TimelineItem[] {
   const rawType = readString(item.type);
   const type = rawType.toLowerCase().replace(/[-_]/g, "");
   const id = readString(item.id) || `${turnId}-${index}`;
   const status = readStatus(item.status) || turnStatus;
+  if (type === "imageview" || type === "image") {
+    const media = imageMedia(threadId, id, item);
+    return singleTimeline(
+      media
+        ? timeline(id, turnId, "image", media.name, status, publicMedia(media))
+        : null,
+    );
+  }
   if (type === "usermessage" || type === "user" || type === "steeringusermessage") {
-    return timeline(id, turnId, "user", readText(item.content ?? item.input ?? item.text), status);
+    return singleTimeline(
+      timeline(id, turnId, "user", readText(item.content ?? item.input ?? item.text), status),
+    );
   }
   if (type === "agentmessage" || type === "assistantmessage" || type === "assistant") {
-    return timeline(id, turnId, "assistant", readText(item.text ?? item.content), status);
+    return presentRichTextItems(
+      threadId,
+      id,
+      turnId,
+      "assistant",
+      readText(item.text ?? item.content),
+      status,
+    );
   }
   if (type.includes("plan")) {
-    const text = readText(item.text ?? item.explanation ?? item.plan ?? item.steps);
-    return timeline(id, turnId, "plan", text, status);
+    return presentRichTextItems(
+      threadId,
+      id,
+      turnId,
+      "plan",
+      readText(item.text ?? item.explanation ?? item.plan ?? item.steps),
+      status,
+    );
   }
   if (type === "commandexecution" || type === "command") {
     const command = sanitizeTerminalText(
@@ -205,12 +251,14 @@ function presentItem(
     const output = sanitizeTerminalText(readText(
       item.aggregatedOutput ?? item.aggregated_output ?? item.output ?? item.stderr ?? item.stdout,
     ));
-    return timeline(
-      id,
-      turnId,
-      "command",
-      [command ? `$ ${command}` : "Command", output].filter(Boolean).join("\n"),
-      status,
+    return singleTimeline(
+      timeline(
+        id,
+        turnId,
+        "command",
+        [command ? `$ ${command}` : "Command", output].filter(Boolean).join("\n"),
+        status,
+      ),
     );
   }
   if (isFileChangeType(rawType)) {
@@ -219,12 +267,75 @@ function presentItem(
       .map((entry) => asRecord(entry))
       .map((entry) => readString(entry?.path) || readString(entry?.filePath))
       .filter(Boolean);
-    return timeline(id, turnId, "file", paths.length ? paths.join("\n") : "Files changed", status);
+    return singleTimeline(
+      timeline(id, turnId, "file", paths.length ? paths.join("\n") : "Files changed", status),
+    );
   }
   if (type === "reasoning") {
-    return timeline(id, turnId, "status", readText(item.summary ?? item.content ?? item.text), status);
+    return singleTimeline(
+      timeline(id, turnId, "status", readText(item.summary ?? item.content ?? item.text), status),
+    );
   }
-  return null;
+  return [];
+}
+
+function presentRichTextItems(
+  threadId: string,
+  itemId: string,
+  turnId: string,
+  kind: "assistant" | "plan",
+  text: string,
+  status: string,
+): TimelineItem[] {
+  const parts = splitLocalMarkdownImages(threadId, itemId, text);
+  if (!parts.some((part) => "media" in part)) {
+    const linked = linkedText(threadId, itemId, text);
+    return singleTimeline(
+      timeline(itemId, turnId, kind, linked.text, status, undefined, linked.resources),
+    );
+  }
+
+  const presented: TimelineItem[] = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index]!;
+    const presentationId = `${itemId}:${"media" in part ? "image" : "text"}:${index}`;
+    if ("media" in part) {
+      const image = timeline(
+        presentationId,
+        turnId,
+        "image",
+        part.media.name,
+        status,
+        publicMedia(part.media),
+      );
+      if (image) presented.push(image);
+      continue;
+    }
+    const linked = linkedText(threadId, itemId, part.text);
+    const message = timeline(
+      presentationId,
+      turnId,
+      kind,
+      linked.text,
+      status,
+      undefined,
+      linked.resources,
+    );
+    if (message) presented.push(message);
+  }
+  return presented;
+}
+
+function singleTimeline(item: TimelineItem | null): TimelineItem[] {
+  return item ? [item] : [];
+}
+
+function publicMedia(media: ThreadMediaFile): TimelineMedia {
+  return {
+    mediaId: media.mediaId,
+    name: media.name,
+    mimeType: media.mimeType,
+  };
 }
 
 export function sanitizeTerminalText(value: string): string {
@@ -320,6 +431,8 @@ function timeline(
   kind: TimelineItem["kind"],
   text: string,
   status: string,
+  media?: TimelineMedia,
+  resources?: TimelineResource[],
 ): TimelineItem | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
@@ -329,7 +442,280 @@ function timeline(
     kind,
     text: trimmed.slice(-MAX_ITEM_TEXT),
     ...(status ? { status } : {}),
+    ...(media ? { media } : {}),
+    ...(resources?.length ? { resources } : {}),
   };
+}
+
+type RichTextPart =
+  | { text: string }
+  | { media: ThreadMediaFile };
+
+function splitLocalMarkdownImages(
+  threadId: string,
+  itemId: string,
+  text: string,
+): RichTextPart[] {
+  const parts: RichTextPart[] = [];
+  let cursor = 0;
+  let imageIndex = 0;
+  for (const match of text.matchAll(markdownLinkPattern())) {
+    if (match[1] !== "!") continue;
+    const matchIndex = match.index;
+    const rawTarget = match[3];
+    if (matchIndex === undefined || !rawTarget) continue;
+    const media = markdownImageMedia(
+      threadId,
+      `${itemId}:markdown-image:${imageIndex}`,
+      rawTarget,
+    );
+    if (!media) continue;
+    if (matchIndex > cursor) parts.push({ text: text.slice(cursor, matchIndex) });
+    parts.push({ media });
+    cursor = matchIndex + match[0].length;
+    imageIndex += 1;
+  }
+  if (parts.length === 0) return [{ text }];
+  if (cursor < text.length) parts.push({ text: text.slice(cursor) });
+  return parts;
+}
+
+export function resolveThreadMedia(
+  thread: ThreadStream,
+  mediaId: string,
+): ThreadMediaFile | null {
+  for (const turnValue of orderedTurns(thread.state)) {
+    const turn = asRecord(turnValue);
+    const turnId = readString(turn?.id) || readString(turn?.turnId) || "turn";
+    const items = Array.isArray(turn?.items) ? turn.items : [];
+    for (let index = 0; index < items.length; index += 1) {
+      const item = asRecord(items[index]);
+      if (!item) continue;
+      const type = readString(item.type).toLowerCase().replace(/[-_]/g, "");
+      const itemId = readString(item.id) || `${turnId}-${index}`;
+      if (type === "imageview" || type === "image") {
+        const media = imageMedia(thread.threadId, itemId, item);
+        if (media?.mediaId === mediaId) return media;
+        continue;
+      }
+      if (!isAssistantOutputType(type)) continue;
+      const text = assistantOutputText(type, item);
+      for (const part of splitLocalMarkdownImages(thread.threadId, itemId, text)) {
+        if ("media" in part && part.media.mediaId === mediaId) return part.media;
+      }
+    }
+  }
+  return null;
+}
+
+export function resolveThreadResource(
+  thread: ThreadStream,
+  resourceId: string,
+): ThreadResourceFile | null {
+  for (const turnValue of orderedTurns(thread.state)) {
+    const turn = asRecord(turnValue);
+    const turnId = readString(turn?.id) || readString(turn?.turnId) || "turn";
+    const items = Array.isArray(turn?.items) ? turn.items : [];
+    for (let index = 0; index < items.length; index += 1) {
+      const item = asRecord(items[index]);
+      if (!item) continue;
+      const type = readString(item.type).toLowerCase().replace(/[-_]/g, "");
+      if (!isAssistantOutputType(type)) continue;
+      const itemId = readString(item.id) || `${turnId}-${index}`;
+      const text = assistantOutputText(type, item);
+      for (const resource of linkedText(thread.threadId, itemId, text).resourceFiles) {
+        if (resource.resourceId === resourceId) return resource;
+      }
+    }
+  }
+  return null;
+}
+
+function imageMedia(
+  threadId: string,
+  itemId: string,
+  item: Record<string, unknown>,
+): ThreadMediaFile | null {
+  const rawPath = readString(item.path) || readString(item.uri) || readString(item.url);
+  if (!rawPath) return null;
+  let fsPath: string;
+  try {
+    fsPath = rawPath.startsWith("file:") ? fileURLToPath(rawPath) : rawPath;
+  } catch {
+    return null;
+  }
+  if (!isAbsolute(fsPath) || isNetworkOrDevicePath(fsPath)) return null;
+  const mimeType = imageMimeType(fsPath);
+  if (!mimeType) return null;
+  const name = basename(fsPath);
+  const mediaId = createHash("sha256")
+    .update(`${threadId}\0${itemId}\0${fsPath}`)
+    .digest("hex")
+    .slice(0, 32);
+  return { mediaId, name, mimeType, fsPath };
+}
+
+function markdownImageMedia(
+  threadId: string,
+  sourceId: string,
+  rawTarget: string,
+): ThreadMediaFile | null {
+  const fsPath = localMarkdownPath(rawTarget, false);
+  if (!fsPath) return null;
+  const mimeType = imageMimeType(fsPath);
+  if (!mimeType) return null;
+  const name = basename(fsPath);
+  const mediaId = createHash("sha256")
+    .update(`${threadId}\0${sourceId}\0${fsPath}`)
+    .digest("hex")
+    .slice(0, 32);
+  return { mediaId, name, mimeType, fsPath };
+}
+
+function imageMimeType(path: string): string | null {
+  switch (extname(path).toLowerCase()) {
+    case ".png": return "image/png";
+    case ".jpg":
+    case ".jpeg": return "image/jpeg";
+    case ".webp": return "image/webp";
+    case ".gif": return "image/gif";
+    default: return null;
+  }
+}
+
+function linkedText(
+  threadId: string,
+  itemId: string,
+  text: string,
+): { text: string; resources: TimelineResource[]; resourceFiles: ThreadResourceFile[] } {
+  const resources: TimelineResource[] = [];
+  const resourceFiles: ThreadResourceFile[] = [];
+  const rewritten = text.replace(
+    markdownLinkPattern(),
+    (match: string, imageMarker: string, label: string, rawTarget: string) => {
+      if (imageMarker) return match;
+      const resource = localLinkedResource(threadId, itemId, rawTarget);
+      if (!resource) return match;
+      resources.push(publicResource(resource));
+      resourceFiles.push(resource);
+      return `[${label}](codexremote://resource/${resource.resourceId})`;
+    },
+  );
+  return { text: rewritten, resources, resourceFiles };
+}
+
+function publicResource(resource: ThreadResourceFile): TimelineResource {
+  return {
+    resourceId: resource.resourceId,
+    name: resource.name,
+    mimeType: resource.mimeType,
+  };
+}
+
+function localLinkedResource(
+  threadId: string,
+  itemId: string,
+  rawTarget: string,
+): ThreadResourceFile | null {
+  const fsPath = localMarkdownPath(rawTarget, true);
+  if (!fsPath) return null;
+  const name = basename(fsPath);
+  const mimeType = resourceMimeType(fsPath);
+  const resourceId = createHash("sha256")
+    .update(`${threadId}\0${itemId}\0${fsPath}`)
+    .digest("hex")
+    .slice(0, 32);
+  return { resourceId, name, mimeType, fsPath };
+}
+
+function localMarkdownPath(rawTarget: string, stripLineSuffix: boolean): string | null {
+  let target = rawTarget.startsWith("<") && rawTarget.endsWith(">")
+    ? rawTarget.slice(1, -1)
+    : rawTarget;
+  try {
+    target = decodeURI(target);
+  } catch {
+    return null;
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(target) && !target.startsWith("file:")) {
+    if (!/^[a-z]:[\\/]/i.test(target)) return null;
+  }
+  let fsPath: string;
+  try {
+    fsPath = target.startsWith("file:") ? fileURLToPath(target) : target;
+  } catch {
+    return null;
+  }
+  if (stripLineSuffix) {
+    const lineSuffix = fsPath.match(/^(.*):\d+(?::\d+)?$/);
+    if (lineSuffix && isAbsolute(lineSuffix[1]!)) fsPath = lineSuffix[1]!;
+  }
+  if (/^\/[a-z]:\//i.test(fsPath)) fsPath = fsPath.slice(1);
+  if (!isAbsolute(fsPath) || isNetworkOrDevicePath(fsPath)) return null;
+  return fsPath;
+}
+
+function isNetworkOrDevicePath(path: string): boolean {
+  return path.replace(/\//g, "\\").startsWith("\\\\");
+}
+
+function markdownLinkPattern(): RegExp {
+  return /(!?)\[([^\]]*)\]\(\s*(<[^>]+>|[^)\s]+)(?:\s+"[^"]*")?\s*\)/g;
+}
+
+function isAssistantOutputType(type: string): boolean {
+  return type === "agentmessage" ||
+    type === "assistantmessage" ||
+    type === "assistant" ||
+    type.includes("plan");
+}
+
+function assistantOutputText(
+  type: string,
+  item: Record<string, unknown>,
+): string {
+  return type.includes("plan")
+    ? readText(item.text ?? item.explanation ?? item.plan ?? item.steps)
+    : readText(item.text ?? item.content);
+}
+
+function resourceMimeType(path: string): string {
+  switch (extname(path).toLowerCase()) {
+    case ".png": return "image/png";
+    case ".jpg":
+    case ".jpeg": return "image/jpeg";
+    case ".webp": return "image/webp";
+    case ".gif": return "image/gif";
+    case ".pdf": return "application/pdf";
+    case ".md":
+    case ".markdown": return "text/markdown";
+    case ".json": return "application/json";
+    case ".csv": return "text/csv";
+    case ".xml": return "application/xml";
+    case ".yaml":
+    case ".yml": return "application/yaml";
+    case ".txt":
+    case ".log":
+    case ".ts":
+    case ".tsx":
+    case ".js":
+    case ".jsx":
+    case ".kt":
+    case ".kts":
+    case ".java":
+    case ".py":
+    case ".rs":
+    case ".go":
+    case ".c":
+    case ".h":
+    case ".cpp":
+    case ".hpp":
+    case ".css":
+    case ".html":
+    case ".sh":
+    case ".ps1": return "text/plain";
+    default: return "application/octet-stream";
+  }
 }
 
 function readText(value: unknown): string {

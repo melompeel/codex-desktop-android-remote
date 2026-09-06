@@ -1,5 +1,9 @@
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+
 import Fastify, { type FastifyRequest } from "fastify";
 import websocket from "@fastify/websocket";
+import type WebSocket from "ws";
 
 import {
   type AttachmentStore,
@@ -19,8 +23,16 @@ import type {
   PairingService,
 } from "../security/device-registry.js";
 import { RequestAuthenticator } from "../security/request-auth.js";
+import {
+  listWorkspaceFiles,
+  readWorkspaceAttachment,
+} from "../workspace/files.js";
 
 type AsrStatus = { available: boolean; reason?: string };
+const MAX_REMOTE_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_REMOTE_RESOURCE_BYTES = 25 * 1024 * 1024;
+const DEFAULT_WEBSOCKET_HEARTBEAT_INTERVAL_MS = 30_000;
+const DEFAULT_WEBSOCKET_MAX_BUFFERED_BYTES = 512 * 1024;
 
 export type BridgeAppDependencies = {
   controller: BridgeController;
@@ -34,15 +46,33 @@ export type BridgeAppDependencies = {
   attachments?: AttachmentStore;
 };
 
+export type BridgeAppOptions = {
+  webSocketHeartbeatIntervalMs?: number;
+  webSocketMaxBufferedBytes?: number;
+};
+
 type AuthenticatedRequest = FastifyRequest & {
   rawBody?: Buffer;
   device?: DeviceRecord;
 };
 
-export function createBridgeApp(dependencies: BridgeAppDependencies) {
+export function createBridgeApp(
+  dependencies: BridgeAppDependencies,
+  options: BridgeAppOptions = {},
+) {
   const app = Fastify({ logger: false, bodyLimit: MAX_ATTACHMENT_BYTES });
   const authenticator = new RequestAuthenticator();
   const voiceSessions = dependencies.voiceSessions ?? new VoiceSessionStore();
+  const webSocketHeartbeatIntervalMs = positiveIntegerOption(
+    options.webSocketHeartbeatIntervalMs,
+    DEFAULT_WEBSOCKET_HEARTBEAT_INTERVAL_MS,
+    "invalid-websocket-heartbeat-interval",
+  );
+  const webSocketMaxBufferedBytes = positiveIntegerOption(
+    options.webSocketMaxBufferedBytes,
+    DEFAULT_WEBSOCKET_MAX_BUFFERED_BYTES,
+    "invalid-websocket-buffer-limit",
+  );
 
   app.register(websocket);
   app.addContentTypeParser(
@@ -170,8 +200,10 @@ export function createBridgeApp(dependencies: BridgeAppDependencies) {
     },
   }));
 
-  app.get("/v1/models", async () => ({
-    models: await dependencies.controller.listModels(),
+  app.get("/v1/models", async (request) => ({
+    models: await dependencies.controller.listModels(
+      parseRefreshQuery(asRecord(request.query)?.refresh),
+    ),
   }));
 
   app.post("/v1/pair", async (request, reply) => {
@@ -248,6 +280,84 @@ export function createBridgeApp(dependencies: BridgeAppDependencies) {
     task: await dependencies.controller.getTaskDetail(routeParam(request, "threadId")),
   }));
 
+  app.get("/v1/tasks/:threadId/media/:mediaId", async (request, reply) => {
+    const media = await dependencies.controller.getTaskMedia(
+      routeParam(request, "threadId"),
+      routeParam(request, "mediaId"),
+    );
+    const metadata = await stat(media.fsPath).catch(() => null);
+    if (!metadata?.isFile()) throw new Error("task-media-not-found");
+    if (metadata.size > MAX_REMOTE_IMAGE_BYTES) throw new Error("task-media-too-large");
+    reply
+      .type(media.mimeType)
+      .header("Content-Length", metadata.size)
+      .header("Cache-Control", "private, max-age=300")
+      .header(
+        "Content-Disposition",
+        `inline; filename*=UTF-8''${encodeURIComponent(media.name)}`,
+      );
+    return reply.send(createReadStream(media.fsPath));
+  });
+
+  app.get("/v1/tasks/:threadId/resources/:resourceId", async (request, reply) => {
+    const resource = await dependencies.controller.getTaskResource(
+      routeParam(request, "threadId"),
+      routeParam(request, "resourceId"),
+    );
+    const metadata = await stat(resource.fsPath).catch(() => null);
+    if (!metadata?.isFile()) throw new Error("task-resource-not-found");
+    if (metadata.size > MAX_REMOTE_RESOURCE_BYTES) {
+      throw new Error("task-resource-too-large");
+    }
+    reply
+      .type(resource.mimeType)
+      .header("Content-Length", metadata.size)
+      .header("Cache-Control", "private, max-age=300")
+      .header(
+        "Content-Disposition",
+        `attachment; filename*=UTF-8''${encodeURIComponent(resource.name)}`,
+      );
+    return reply.send(createReadStream(resource.fsPath));
+  });
+
+  app.get("/v1/tasks/:threadId/workspace-files", async (request) => {
+    const threadId = routeParam(request, "threadId");
+    const task = await dependencies.controller.getTaskDetail(threadId);
+    if (!task.cwd) throw new Error("thread-cwd-required");
+    const query = readString(asRecord(request.query)?.query) ?? "";
+    return { files: await listWorkspaceFiles(task.cwd, query) };
+  });
+
+  app.post("/v1/tasks/:threadId/workspace-attachments", async (request, reply) => {
+    const threadId = routeParam(request, "threadId");
+    const body = asRecord(request.body);
+    const relativePath = readString(body?.relativePath);
+    const idempotencyKey = readString(body?.idempotencyKey) ?? requiredRequestId(request);
+    if (!relativePath) return reply.code(400).send({ error: "workspace-file-path-required" });
+    const device = authenticatedDevice(request);
+    const scope = `${device.deviceId}:workspace-attachment:${threadId}`;
+    const claim = dependencies.store.beginIdempotent(scope, idempotencyKey);
+    if (claim.replayed) {
+      return reply.code(201).send({ attachment: asRecord(claim.result), replayed: true });
+    }
+    try {
+      const task = await dependencies.controller.getTaskDetail(threadId);
+      if (!task.cwd) throw new Error("thread-cwd-required");
+      const file = await readWorkspaceAttachment(task.cwd, relativePath);
+      const attachment = await requireAttachmentStore(dependencies).save(
+        device.deviceId,
+        file.name,
+        file.mimeType,
+        file.body,
+      );
+      dependencies.store.completeIdempotent(scope, idempotencyKey, attachment);
+      return reply.code(201).send({ attachment });
+    } catch (error) {
+      dependencies.store.releaseIdempotent(scope, idempotencyKey);
+      throw error;
+    }
+  });
+
   app.get("/v1/tasks/:threadId/diff", async (request) => ({
     diff: await dependencies.controller.getTaskDiff(routeParam(request, "threadId")),
   }));
@@ -282,13 +392,12 @@ export function createBridgeApp(dependencies: BridgeAppDependencies) {
 
   app.register(async (streamScope) => {
     streamScope.get("/v1/stream", { websocket: true }, (socket) => {
-      for (const event of dependencies.store.eventsAfter(0)) {
-        socket.send(JSON.stringify(event));
-      }
-      const unsubscribe = dependencies.store.subscribe((event) => {
-        if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(event));
-      });
-      socket.on("close", unsubscribe);
+      manageEventStream(
+        socket,
+        dependencies.store,
+        webSocketHeartbeatIntervalMs,
+        webSocketMaxBufferedBytes,
+      );
     });
   });
 
@@ -534,6 +643,97 @@ export function createBridgeApp(dependencies: BridgeAppDependencies) {
 function readHeader(request: FastifyRequest, name: string): string | null {
   const value = request.headers[name];
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function manageEventStream(
+  socket: WebSocket,
+  store: BridgeStore,
+  heartbeatIntervalMs: number,
+  maxBufferedBytes: number,
+): void {
+  let closed = false;
+  let awaitingPong = false;
+  let heartbeat: NodeJS.Timeout | null = null;
+  let unsubscribe: () => void = () => undefined;
+
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    if (heartbeat) clearInterval(heartbeat);
+    heartbeat = null;
+    unsubscribe();
+  };
+  const terminate = () => {
+    cleanup();
+    if (socket.readyState !== socket.CLOSED) {
+      try {
+        socket.terminate();
+      } catch {
+        // The close/error path may have already destroyed the underlying socket.
+      }
+    }
+  };
+  const send = (value: unknown) => {
+    if (closed || socket.readyState !== socket.OPEN) {
+      terminate();
+      return;
+    }
+    const payload = JSON.stringify(value);
+    if (socket.bufferedAmount + Buffer.byteLength(payload) > maxBufferedBytes) {
+      terminate();
+      return;
+    }
+    try {
+      socket.send(payload, (error) => {
+        if (error) terminate();
+      });
+    } catch {
+      terminate();
+    }
+  };
+
+  socket.once("close", cleanup);
+  socket.once("error", terminate);
+  socket.on("pong", () => {
+    awaitingPong = false;
+  });
+  unsubscribe = store.subscribe(send);
+  for (const event of store.eventsAfter(0)) {
+    send(event);
+    if (closed) return;
+  }
+
+  heartbeat = setInterval(() => {
+    if (awaitingPong || socket.readyState !== socket.OPEN) {
+      terminate();
+      return;
+    }
+    awaitingPong = true;
+    try {
+      socket.ping();
+    } catch {
+      terminate();
+    }
+  }, heartbeatIntervalMs);
+  heartbeat.unref();
+}
+
+function positiveIntegerOption(
+  value: number | undefined,
+  fallback: number,
+  error: string,
+): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(error);
+  return value;
+}
+
+function parseRefreshQuery(value: unknown): boolean {
+  if (value === undefined || value === false || value === 0 || value === "0" || value === "false") {
+    return false;
+  }
+  if (value === true || value === 1 || value === "1" || value === "true") return true;
+  throw new Error("invalid-model-refresh-query");
 }
 
 function parseTaskListQuery(

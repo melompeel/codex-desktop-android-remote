@@ -1,9 +1,10 @@
 import { createHash, createHmac } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 
 import { AttachmentStore } from "../src/attachments/store.js";
@@ -185,6 +186,99 @@ describe("Bridge HTTP API", () => {
       kind: "image",
       path: join(root, "attachment-api-1", "screen.png"),
     }]);
+  });
+
+  it("downloads only files explicitly linked by the task", async () => {
+    const root = await mkdtemp(join(tmpdir(), "codex-remote-linked-file-"));
+    temporaryRoots.push(root);
+    const reportPath = join(root, "report.txt");
+    await writeFile(reportPath, "verified report\n");
+    const { app, registry, store } = setup();
+    const token = (await registry.issue("device-download", "Pixel", "android")).token;
+    store.applyStreamChange("thread-resource", {
+      type: "snapshot",
+      revision: 1,
+      conversationState: {
+        turns: [{
+          id: "turn-1",
+          status: "completed",
+          items: [{
+            id: "message-1",
+            type: "agentMessage",
+            text: `打开 [报告](<${pathToFileURL(reportPath).href}>)`,
+          }],
+        }],
+        requests: [],
+      },
+    });
+
+    const detailPath = "/v1/tasks/thread-resource";
+    const detailResponse = await app.inject({
+      method: "GET",
+      url: detailPath,
+      headers: signedHeaders(token, "GET", detailPath, "", "resource-detail"),
+    });
+    const resourceId = detailResponse.json<{ task: { items: Array<{
+      resources: Array<{ resourceId: string }>;
+    }> } }>().task.items[0]!.resources[0]!.resourceId;
+    const resourcePath = `/v1/tasks/thread-resource/resources/${resourceId}`;
+    const resourceResponse = await app.inject({
+      method: "GET",
+      url: resourcePath,
+      headers: signedHeaders(token, "GET", resourcePath, "", "resource-download"),
+    });
+
+    expect(resourceResponse.statusCode).toBe(200);
+    expect(resourceResponse.body).toBe("verified report\n");
+    expect(resourceResponse.headers["content-type"]).toContain("text/plain");
+  });
+
+  it("lists and imports supported files from the current task workspace", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "codex-remote-workspace-api-"));
+    const attachmentRoot = await mkdtemp(join(tmpdir(), "codex-remote-workspace-copy-"));
+    temporaryRoots.push(workspaceRoot, attachmentRoot);
+    await writeFile(join(workspaceRoot, "README.md"), "# Workspace\n");
+    const attachments = new AttachmentStore(
+      attachmentRoot,
+      Date.now,
+      () => "workspace-attachment-1",
+    );
+    const { app, registry, store } = setup(undefined, attachments);
+    const token = (await registry.issue("device-workspace", "Pixel", "android")).token;
+    store.applyStreamChange("thread-workspace", {
+      type: "snapshot",
+      revision: 1,
+      conversationState: { cwd: workspaceRoot, turns: [], requests: [] },
+    });
+
+    const listPath = "/v1/tasks/thread-workspace/workspace-files";
+    const listed = await app.inject({
+      method: "GET",
+      url: listPath,
+      headers: signedHeaders(token, "GET", listPath, "", "workspace-list"),
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json()).toMatchObject({ files: [{ relativePath: "README.md" }] });
+
+    const importPath = "/v1/tasks/thread-workspace/workspace-attachments";
+    const body = JSON.stringify({ relativePath: "README.md", idempotencyKey: "workspace-1" });
+    const imported = await app.inject({
+      method: "POST",
+      url: importPath,
+      headers: {
+        ...signedHeaders(token, "POST", importPath, body, "workspace-import"),
+        "content-type": "application/json",
+      },
+      payload: body,
+    });
+    expect(imported.statusCode).toBe(201);
+    expect(imported.json()).toMatchObject({
+      attachment: {
+        attachmentId: "workspace-attachment-1",
+        name: "README.md",
+        mimeType: "text/markdown",
+      },
+    });
   });
 
   it("lists dynamic models and validates a thread settings update", async () => {
@@ -673,13 +767,98 @@ describe("Bridge HTTP API", () => {
     });
     socket.terminate();
   });
+
+  it("terminates a websocket that stops answering heartbeat pings", async () => {
+    const { app, registry, store } = setup(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { webSocketHeartbeatIntervalMs: 20 },
+    );
+    const originalSubscribe = store.subscribe.bind(store);
+    let unsubscribeCount = 0;
+    vi.spyOn(store, "subscribe").mockImplementation((listener) => {
+      const unsubscribe = originalSubscribe(listener);
+      return () => {
+        unsubscribeCount += 1;
+        unsubscribe();
+      };
+    });
+    const credential = await registry.issue("device-heartbeat", "Pixel", "android");
+    const path = "/v1/stream";
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("test-listener-missing");
+    const socket = new WebSocket(`ws://127.0.0.1:${address.port}${path}`, {
+      autoPong: false,
+      headers: signedHeaders(
+        credential.token,
+        "GET",
+        path,
+        "",
+        "websocket-heartbeat",
+      ),
+    });
+    await socketOpened(socket);
+
+    await socketClosed(socket, 1_000);
+
+    expect(unsubscribeCount).toBe(1);
+  });
+
+  it("terminates and unsubscribes a websocket before its send buffer exceeds the limit", async () => {
+    const { app, registry, store } = setup(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        webSocketHeartbeatIntervalMs: 1_000,
+        webSocketMaxBufferedBytes: 64,
+      },
+    );
+    const originalSubscribe = store.subscribe.bind(store);
+    let unsubscribeCount = 0;
+    vi.spyOn(store, "subscribe").mockImplementation((listener) => {
+      const unsubscribe = originalSubscribe(listener);
+      return () => {
+        unsubscribeCount += 1;
+        unsubscribe();
+      };
+    });
+    const credential = await registry.issue("device-backpressure", "Pixel", "android");
+    const path = "/v1/stream";
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    if (!address || typeof address === "string") throw new Error("test-listener-missing");
+    const socket = new WebSocket(`ws://127.0.0.1:${address.port}${path}`, {
+      headers: signedHeaders(
+        credential.token,
+        "GET",
+        path,
+        "",
+        "websocket-backpressure",
+      ),
+    });
+    await socketOpened(socket);
+    const closed = socketClosed(socket, 1_000);
+
+    store.appendEvent("test.large", { text: "x".repeat(256) });
+
+    await closed;
+    expect(unsubscribeCount).toBe(1);
+  });
 });
 
 function setup(transcriber?: {
   status(): { available: boolean };
   transcribe(source: Buffer): Promise<string>;
 }, attachments?: AttachmentStore, catalog?: TaskCatalogPort,
-taskCreator?: TaskCreatorPort, ownerHandoff?: OwnerHandoffOptions) {
+taskCreator?: TaskCreatorPort, ownerHandoff?: OwnerHandoffOptions,
+appOptions: TestBridgeAppOptions = {}) {
   const store = new BridgeStore();
   const control = new ApiFakeControl();
   const controller = new BridgeController(
@@ -700,9 +879,35 @@ taskCreator?: TaskCreatorPort, ownerHandoff?: OwnerHandoffOptions) {
     asrStatus: () => ({ available: false, reason: "not-configured" }),
     ...(transcriber ? { transcriber } : {}),
     ...(attachments ? { attachments } : {}),
-  });
+  }, appOptions);
   apps.push(app);
   return { app, control, registry, store, controller };
+}
+
+type TestBridgeAppOptions = {
+  webSocketHeartbeatIntervalMs?: number;
+  webSocketMaxBufferedBytes?: number;
+};
+
+function socketOpened(socket: WebSocket): Promise<void> {
+  return new Promise((resolve, reject) => {
+    socket.once("open", resolve);
+    socket.once("error", reject);
+    socket.once("unexpected-response", (_request, response) => {
+      response.resume();
+      reject(new Error(`websocket-${response.statusCode}`));
+    });
+  });
+}
+
+function socketClosed(socket: WebSocket, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("websocket-close-timeout")), timeoutMs);
+    socket.once("close", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
 }
 
 function signedHeaders(

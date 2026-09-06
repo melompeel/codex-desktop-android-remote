@@ -43,6 +43,17 @@ const FILE_TYPES = new Map<string, ReadonlySet<string>>([
   ],
 ]);
 
+export function supportedAttachmentMimeType(path: string): string | null {
+  const extension = extname(path).toLowerCase();
+  for (const [mimeType, extensions] of IMAGE_TYPES) {
+    if (extensions.has(extension)) return mimeType;
+  }
+  for (const [mimeType, extensions] of FILE_TYPES) {
+    if (extensions.has(extension)) return mimeType;
+  }
+  return null;
+}
+
 export type StoredAttachment = {
   attachmentId: string;
   ownerDeviceId: string;

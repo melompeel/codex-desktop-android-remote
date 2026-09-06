@@ -4,7 +4,13 @@ import java.time.Instant
 import java.net.URLEncoder
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.io.IOException
+import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -15,6 +21,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -27,6 +35,7 @@ class BridgeApi(
     private val token: String?,
     private val client: OkHttpClient = OkHttpClient.Builder()
         .pingInterval(20, TimeUnit.SECONDS)
+        .callTimeout(45, TimeUnit.SECONDS)
         .build(),
 ) {
     private val root = BridgeEndpoint.normalize(baseUrl)
@@ -64,6 +73,33 @@ class BridgeApi(
             json.decodeFromString<TaskDetailResponse>(response.body!!.string()).task
         }
 
+    suspend fun taskMedia(threadId: String, mediaId: String, destination: File) {
+        val path = "/v1/tasks/${encodePathSegment(threadId)}/media/${encodePathSegment(mediaId)}"
+        execute("GET", path) { response ->
+            val body = requireNotNull(response.body)
+            val maxBytes = 50L * 1_024 * 1_024
+            check(body.contentLength() <= maxBytes) { "image-download-limit-exceeded" }
+            body.byteStream().use { input ->
+                destination.outputStream().use { output ->
+                    val buffer = ByteArray(8_192)
+                    var total = 0L
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count == -1) break
+                        total += count
+                        check(total <= maxBytes) { "image-download-limit-exceeded" }
+                        output.write(buffer, 0, count)
+                    }
+                }
+            }
+        }
+    }
+
+    suspend fun taskResource(threadId: String, resourceId: String): ByteArray {
+        val path = "/v1/tasks/${encodePathSegment(threadId)}/resources/${encodePathSegment(resourceId)}"
+        return execute("GET", path) { response -> response.body!!.bytes() }
+    }
+
     suspend fun approvals(): List<ApprovalDto> =
         execute("GET", "/v1/approvals") { response ->
             json.decodeFromString<ApprovalsResponse>(response.body!!.string()).approvals
@@ -78,8 +114,8 @@ class BridgeApi(
             else json.decodeFromString(raw)
         }
 
-    suspend fun models(): List<ModelOptionDto> =
-        execute("GET", "/v1/models") { response ->
+    suspend fun models(refresh: Boolean = false): List<ModelOptionDto> =
+        execute("GET", if (refresh) "/v1/models?refresh=true" else "/v1/models") { response ->
             json.decodeFromString<ModelsResponse>(response.body!!.string()).values()
         }
 
@@ -172,6 +208,27 @@ class BridgeApi(
         execute<Unit>("DELETE", "/v1/attachments/$attachmentId", "{}") { }
     }
 
+    suspend fun workspaceFiles(threadId: String, query: String = ""): List<WorkspaceFileDto> {
+        val path = "/v1/tasks/${encodePathSegment(threadId)}/workspace-files" +
+            if (query.isBlank()) "" else "?query=${encodeQuery(query)}"
+        return execute("GET", path) { response ->
+            json.decodeFromString<WorkspaceFilesResponse>(response.body!!.string()).files
+        }
+    }
+
+    suspend fun importWorkspaceAttachment(
+        threadId: String,
+        relativePath: String,
+    ): UploadedAttachmentDto {
+        val body = json.encodeToString(buildJsonObject {
+            put("relativePath", relativePath)
+            put("idempotencyKey", UUID.randomUUID().toString())
+        })
+        return execute("POST", "/v1/tasks/${encodePathSegment(threadId)}/workspace-attachments", body) {
+            response -> json.decodeFromString<UploadAttachmentResponse>(response.body!!.string()).attachment
+        }
+    }
+
     suspend fun interrupt(threadId: String) {
         execute<Unit>("POST", "/v1/tasks/$threadId/interrupt", "{}") { }
     }
@@ -210,12 +267,22 @@ class BridgeApi(
             .url(root.replaceFirst("http://", "ws://").replaceFirst("https://", "wss://") + path)
             .build()
         return client.newWebSocket(request, object : WebSocketListener() {
+            private val disconnected = AtomicBoolean(false)
+
+            private fun reportDisconnected() {
+                if (disconnected.compareAndSet(false, true)) onConnected(false)
+            }
+
             override fun onOpen(webSocket: WebSocket, response: Response) = onConnected(true)
             override fun onMessage(webSocket: WebSocket, text: String) {
                 runCatching { json.decodeFromString<BridgeEvent>(text) }.onSuccess(onEvent)
             }
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = onConnected(false)
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = onConnected(false)
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                webSocket.close(code, reason)
+                reportDisconnected()
+            }
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = reportDisconnected()
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = reportDisconnected()
         })
     }
 
@@ -250,11 +317,26 @@ class BridgeApi(
         if (method != "GET") {
             builder.method(method, bytes.toRequestBody(mediaType.toMediaType()))
         }
-        client.newCall(builder.build()).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw IllegalStateException("Bridge ${response.code}: ${response.body?.string().orEmpty()}")
-            }
-            read(response)
+        suspendCancellableCoroutine { continuation ->
+            val call = client.newCall(builder.build())
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (continuation.isActive) continuation.resumeWithException(e)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    val result = runCatching {
+                        response.use {
+                            if (!it.isSuccessful) {
+                                throw IllegalStateException("Bridge ${it.code}: ${it.body?.string().orEmpty()}")
+                            }
+                            read(it)
+                        }
+                    }
+                    if (continuation.isActive) result.fold(continuation::resume, continuation::resumeWithException)
+                }
+            })
         }
     }
 

@@ -2,9 +2,12 @@ package com.alphapi.codexremote
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
+import java.io.File
 
 @Serializable
 data class PairResponse(val deviceId: String, val token: String)
+
+data class SavedServerAddress(val name: String, val serverUrl: String)
 
 @Serializable
 data class TaskDto(
@@ -26,12 +29,28 @@ data class TaskDto(
 data class TasksResponse(val tasks: List<TaskDto>)
 
 @Serializable
+data class TimelineMediaDto(
+    val mediaId: String,
+    val name: String,
+    val mimeType: String,
+)
+
+@Serializable
+data class TimelineResourceDto(
+    val resourceId: String,
+    val name: String,
+    val mimeType: String = "application/octet-stream",
+)
+
+@Serializable
 data class TimelineItemDto(
     val id: String,
     val turnId: String,
     val kind: String,
     val text: String,
     val status: String? = null,
+    val media: TimelineMediaDto? = null,
+    val resources: List<TimelineResourceDto> = emptyList(),
 )
 
 @Serializable
@@ -219,6 +238,17 @@ data class UploadAttachmentResponse(
 )
 
 @Serializable
+data class WorkspaceFileDto(
+    val relativePath: String,
+    val name: String,
+    val mimeType: String,
+    val size: Long,
+)
+
+@Serializable
+data class WorkspaceFilesResponse(val files: List<WorkspaceFileDto> = emptyList())
+
+@Serializable
 data class ThreadSettingsDto(
     val model: String? = null,
     val effort: String? = null,
@@ -282,9 +312,11 @@ data class RemoteState(
     val connected: Boolean = false,
     val loading: Boolean = false,
     val serverUrl: String = "",
+    val serverAddresses: List<SavedServerAddress> = emptyList(),
     val tasks: List<TaskDto> = emptyList(),
     val taskDetail: TaskDetailDto? = null,
     val approvals: List<ApprovalDto> = emptyList(),
+    val completedReviewThreadIds: Set<String> = emptySet(),
     val selectedThreadId: String? = null,
     val writeSupported: Boolean = true,
     val compatibilityVerified: Boolean = true,
@@ -297,6 +329,12 @@ data class RemoteState(
     val draftsByThread: Map<String, String> = emptyMap(),
     val deliveryByThread: Map<String, DeliveryMode> = emptyMap(),
     val attachmentsByThread: Map<String, List<ComposerAttachment>> = emptyMap(),
+    val taskMediaById: Map<String, File> = emptyMap(),
+    val loadingTaskMediaIds: Set<String> = emptySet(),
+    val failedTaskMediaIds: Set<String> = emptySet(),
+    val downloadingResourceIds: Set<String> = emptySet(),
+    val workspaceFiles: List<WorkspaceFileDto> = emptyList(),
+    val workspaceFilesLoading: Boolean = false,
     val sendingThreads: Set<String> = emptySet(),
     val stoppingThreads: Set<String> = emptySet(),
     val settingsThreads: Set<String> = emptySet(),
@@ -305,4 +343,7 @@ data class RemoteState(
     val creatingTask: Boolean = false,
     val taskCreationError: String? = null,
     val error: String? = null,
-)
+) {
+    val pendingTaskCount: Int
+        get() = (completedReviewThreadIds + approvals.map { it.threadId }).size
+}

@@ -35,7 +35,7 @@ class WorkspaceUiTest {
             }
         }
 
-        compose.onNodeWithText("当前 Codex Desktop 版本尚未开放远程新建任务。请先在电脑上新建并打开任务。")
+        compose.onNodeWithText("当前连接暂不支持远程新建任务。请先在电脑上新建并打开任务。")
             .assertIsDisplayed()
         compose.onNodeWithText("创建").assertIsNotEnabled()
     }
@@ -109,5 +109,32 @@ class WorkspaceUiTest {
         compose.onNodeWithText("仅本次允许").assertIsDisplayed()
         compose.onNodeWithText("拒绝").assertIsDisplayed()
         compose.onNodeWithText("取消").assertIsDisplayed()
+    }
+
+    @Test
+    fun showsUserNamedServerAddresses() {
+        compose.setContent {
+            MaterialTheme {
+                ConnectionManagerDialog(
+                    state = RemoteState(
+                        configured = true,
+                        serverUrl = "http://100.100.1.2:8766",
+                        serverAddresses = listOf(
+                            SavedServerAddress("远程连接", "http://100.100.1.2:8766"),
+                            SavedServerAddress("工作室", "http://192.168.1.8:8766"),
+                        ),
+                    ),
+                    onDismiss = {},
+                    onSwitch = {},
+                    onAdd = { _, _ -> },
+                    onRemove = {},
+                    onClearPairing = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("远程连接").assertIsDisplayed()
+        compose.onNodeWithText("工作室").assertIsDisplayed()
+        compose.onNodeWithText("地址名称").assertIsDisplayed()
     }
 }

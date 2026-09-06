@@ -144,7 +144,7 @@ export class CodexIpcClient {
     this.decoder.reset();
     socket.on("data", (chunk) => this.handleData(chunk));
     socket.on("error", (error) => this.emitError(error));
-    socket.on("close", () => this.handleClose());
+    socket.on("close", () => this.handleClose(socket));
 
     try {
       const response = await this.sendRequest(
@@ -171,11 +171,14 @@ export class CodexIpcClient {
           ? createConnection(this.endpoint)
           : createConnection(this.endpoint.port, this.endpoint.host);
       const fail = (error: Error) => {
+        clearTimeout(timer);
         socket.destroy();
         reject(error);
       };
+      const timer = setTimeout(() => fail(new Error("ipc-connect-timeout")), this.requestTimeoutMs);
       socket.once("error", fail);
       socket.once("connect", () => {
+        clearTimeout(timer);
         socket.off("error", fail);
         resolve(socket);
       });
@@ -205,6 +208,8 @@ export class CodexIpcClient {
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
         reject(new Error(`ipc-request-timeout:${method}`));
+        // A writable but stalled pipe needs a fresh handshake and subscriptions.
+        if (this.socket === socket) socket.destroy();
       }, this.requestTimeoutMs);
       this.pending.set(requestId, { method, timer, resolve, reject });
       try {
@@ -251,7 +256,8 @@ export class CodexIpcClient {
     if (frame.type === "broadcast") this.events.emit("broadcast", frame);
   }
 
-  private handleClose(): void {
+  private handleClose(socket: Socket): void {
+    if (this.socket !== socket) return;
     this.socket = null;
     this.clientId = null;
     this.decoder.reset();

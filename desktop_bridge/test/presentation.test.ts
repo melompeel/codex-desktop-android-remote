@@ -1,8 +1,12 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
 import {
   presentThread,
   presentThreadDiff,
+  resolveThreadMedia,
+  resolveThreadResource,
   sanitizeTerminalText,
 } from "../src/domain/presentation.js";
 
@@ -39,6 +43,203 @@ describe("task presentation", () => {
       ],
     });
     expect(JSON.stringify(detail)).not.toContain("SECRET-DIFF");
+  });
+
+  it("exposes referenced ImageView files through opaque media ids", () => {
+    const thread = {
+      threadId: "thread-image",
+      revision: 12,
+      state: {
+        turns: [{
+          id: "turn-image",
+          status: "completed",
+          items: [{
+            id: "image-1",
+            type: "ImageView",
+            path: "file:///C:/Users/melon/My%20Project/result.png",
+          }],
+        }],
+      },
+    };
+
+    const detail = presentThread(thread);
+    const media = detail.items[0]?.media;
+
+    expect(detail.items[0]).toMatchObject({
+      kind: "image",
+      text: "result.png",
+      media: {
+        name: "result.png",
+        mimeType: "image/png",
+      },
+    });
+    expect(media?.mediaId).toMatch(/^[a-f0-9]{32}$/);
+    expect(JSON.stringify(detail)).not.toContain("C:/Users");
+    expect(JSON.stringify(detail)).not.toContain("fsPath");
+    expect(resolveThreadMedia(thread, media!.mediaId)).toEqual({
+      ...media,
+      fsPath: "C:\\Users\\melon\\My Project\\result.png",
+    });
+  });
+
+  it("turns assistant markdown images into ordered remote media items", () => {
+    const thread = {
+      threadId: "thread-markdown-image",
+      revision: 13,
+      state: {
+        cwd: "C:\\workspace",
+        turns: [{
+          id: "turn-image",
+          status: "completed",
+          items: [{
+            id: "message-image",
+            type: "agentMessage",
+            text: [
+              "生成结果如下：",
+              "![最终效果](<file:///C:/Users/melon/Exports/final%20result.png>)",
+              "图片之后的说明。",
+            ].join("\n\n"),
+          }],
+        }],
+      },
+    };
+
+    const detail = presentThread(thread);
+
+    expect(detail.items.map((item) => item.kind)).toEqual([
+      "assistant",
+      "image",
+      "assistant",
+    ]);
+    expect(detail.items.map((item) => item.text)).toEqual([
+      "生成结果如下：",
+      "final result.png",
+      "图片之后的说明。",
+    ]);
+    expect(JSON.stringify(detail)).not.toContain("C:/Users");
+    expect(JSON.stringify(detail)).not.toContain("fsPath");
+    const media = detail.items[1]?.media;
+    expect(media).toMatchObject({
+      name: "final result.png",
+      mimeType: "image/png",
+    });
+    expect(resolveThreadMedia(thread, media!.mediaId)).toEqual({
+      ...media,
+      fsPath: "C:\\Users\\melon\\Exports\\final result.png",
+    });
+  });
+
+  it("rewrites local markdown file links to authenticated task resources", () => {
+    const thread = {
+      threadId: "thread-resource",
+      revision: 3,
+      state: {
+        turns: [{
+          id: "turn-resource",
+          status: "completed",
+          items: [{
+            id: "message-resource",
+            type: "agentMessage",
+            text: "查看 [报告](<file:///C:/Users/melon/My%20Project/report.pdf>) 和 [官网](https://openai.com)",
+          }],
+        }],
+      },
+    };
+
+    const detail = presentThread(thread);
+    const resource = detail.items[0]?.resources?.[0];
+
+    expect(detail.items[0]?.text).toContain(
+      `[报告](codexremote://resource/${resource?.resourceId})`,
+    );
+    expect(detail.items[0]?.text).toContain("[官网](https://openai.com)");
+    expect(JSON.stringify(detail)).not.toContain("C:/Users");
+    expect(JSON.stringify(detail)).not.toContain("fsPath");
+    expect(resolveThreadResource(thread, resource!.resourceId)).toEqual({
+      ...resource,
+      fsPath: "C:\\Users\\melon\\My Project\\report.pdf",
+    });
+  });
+
+  it("does not register user-supplied local links as downloadable resources", () => {
+    const thread = {
+      threadId: "thread-user-resource",
+      revision: 4,
+      state: {
+        turns: [{
+          id: "turn-resource",
+          status: "completed",
+          items: [
+            {
+              id: "user-resource",
+              type: "userMessage",
+              text: "读取 [密钥](<file:///C:/Users/melon/.ssh/id_rsa>)",
+            },
+            {
+              id: "assistant-resource",
+              type: "agentMessage",
+              text: "查看 [导出报告](<file:///C:/Users/melon/Exports/report.pdf>)",
+            },
+          ],
+        }],
+      },
+    };
+
+    const detail = presentThread(thread);
+
+    expect(detail.items[0]?.resources).toBeUndefined();
+    expect(detail.items[0]?.text).toContain("file:///C:/Users/melon/.ssh/id_rsa");
+    expect(detail.items[1]?.resources).toHaveLength(1);
+    expect(detail.items[1]?.text).toContain("codexremote://resource/");
+    expect(resolveThreadResource(
+      thread,
+      opaqueId(
+        "thread-user-resource",
+        "user-resource",
+        "C:\\Users\\melon\\.ssh\\id_rsa",
+      ),
+    )).toBeNull();
+  });
+
+  it("rejects UNC files and images while keeping local assistant resources", () => {
+    const thread = {
+      threadId: "thread-unc",
+      revision: 5,
+      state: {
+        turns: [{
+          id: "turn-unc",
+          status: "completed",
+          items: [
+            {
+              id: "assistant-unc",
+              type: "agentMessage",
+              text: [
+                "[共享文档](<file://server/share/report.txt>)",
+                "![共享图片](<file://server/share/result.png>)",
+                "[本地文档](<file:///C:/Users/melon/Exports/report.txt>)",
+              ].join("\n"),
+            },
+            {
+              id: "image-unc",
+              type: "ImageView",
+              path: "\\\\server\\share\\result.png",
+            },
+          ],
+        }],
+      },
+    };
+
+    const detail = presentThread(thread);
+
+    expect(detail.items.filter((item) => item.kind === "image")).toHaveLength(0);
+    expect(detail.items[0]?.resources).toHaveLength(1);
+    expect(detail.items[0]?.resources?.[0]?.name).toBe("report.txt");
+    expect(detail.items[0]?.text).toContain("file://server/share/report.txt");
+    expect(detail.items[0]?.text).toContain("file://server/share/result.png");
+    expect(resolveThreadMedia(
+      thread,
+      opaqueId("thread-unc", "image-unc", "\\\\server\\share\\result.png"),
+    )).toBeNull();
   });
 
   it("reads v11 canonical turnHistory entities in island order", () => {
@@ -215,3 +416,10 @@ describe("task presentation", () => {
     });
   });
 });
+
+function opaqueId(threadId: string, itemId: string, path: string): string {
+  return createHash("sha256")
+    .update(`${threadId}\0${itemId}\0${path}`)
+    .digest("hex")
+    .slice(0, 32);
+}

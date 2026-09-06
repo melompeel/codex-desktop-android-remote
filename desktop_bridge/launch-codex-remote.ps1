@@ -23,9 +23,10 @@ function Test-BridgeRunning {
 
     try {
         $health = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/v1/health" -TimeoutSec 2
-        return $null -ne $health.compatibility
+        return $health.ok -eq $true -and $null -ne $health.compatibility
     } catch {
-        throw "TCP port $Port is occupied by another process (PID $($listener.OwningProcess))."
+        # start-bridge verifies the process identity before recovering a hung Bridge.
+        return $false
     }
 }
 

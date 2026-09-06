@@ -11,7 +11,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         repository.restoreAndStart()
     }
 
-    fun pair(url: String, code: String, name: String) {
-        repository.pair(url, code, name)
+    fun pair(url: String, code: String, deviceName: String, connectionName: String) {
+        repository.pair(url, code, deviceName, connectionName)
     }
 }

@@ -351,6 +351,48 @@ describe("BridgeController", () => {
     ]);
   });
 
+  it("auto-follows an owner status announcement before the phone selects a task", async () => {
+    const store = new BridgeStore();
+    const control = new FakeControl();
+    const controller = new BridgeController(control, store);
+
+    controller.ingestIpcFrame({
+      type: "broadcast",
+      method: "thread-stream-following-status-requested",
+      version: 1,
+      sourceClientId: "desktop-owner",
+      params: { hostId: "local", conversationId: "desktop-thread" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(control.calls).toEqual([["loadHistory", "desktop-thread"]]);
+  });
+
+  it("preserves task update times for completions missed while the phone was offline", async () => {
+    const store = new BridgeStore();
+    const controller = new BridgeController(new FakeControl(), store, {
+      async listThreads() {
+        return [
+          { id: "history-thread", status: "idle", updatedAt: 1_800_000_010 },
+          { id: "live-thread", status: "idle", updatedAt: 1_800_000_020 },
+        ];
+      },
+    });
+    controller.ingestIpcFrame(snapshot("live-thread", 4, "idle"));
+    await expect(controller.listTasks()).resolves.toMatchObject([
+      { threadId: "live-thread", updatedAt: 1_800_000_020_000 },
+      { threadId: "history-thread", updatedAt: 1_800_000_010_000 },
+    ]);
+  });
+
+  it("restores subscriptions after IPC reconnect even with cached task history", async () => {
+    const control = new FakeControl();
+    const controller = new BridgeController(control, new BridgeStore());
+    controller.ingestIpcFrame(snapshot("live-thread", 4, "idle"));
+    await controller.restoreFollowing();
+    expect(control.calls).toEqual([["loadHistory", "live-thread"]]);
+  });
+
   it("accepts parseable stream broadcasts from an unverified protocol version", () => {
     const store = new BridgeStore();
     const controller = new BridgeController(new FakeControl(), store);

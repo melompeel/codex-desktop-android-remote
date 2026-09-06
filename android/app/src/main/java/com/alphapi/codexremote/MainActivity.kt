@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Difference
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
@@ -123,16 +124,26 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun PairingScreen(state: RemoteState, pair: (String, String, String) -> Unit) {
+private fun PairingScreen(state: RemoteState, pair: (String, String, String, String) -> Unit) {
     var url by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
     var name by remember { mutableStateOf(Build.MODEL) }
+    var connectionName by remember { mutableStateOf("") }
     Column(
         Modifier.fillMaxSize().imePadding().padding(24.dp),
         verticalArrangement = Arrangement.Center,
     ) {
         Text("连接 Codex Bridge", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(20.dp))
+        OutlinedTextField(
+            connectionName,
+            { connectionName = it },
+            label = { Text("连接名称（可选）") },
+            placeholder = { Text("例如：我的电脑") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
         OutlinedTextField(
             url,
             { url = it },
@@ -148,7 +159,7 @@ private fun PairingScreen(state: RemoteState, pair: (String, String, String) -> 
         state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 12.dp)) }
         Spacer(Modifier.height(20.dp))
         Button(
-            onClick = { pair(url, code, name) },
+            onClick = { pair(url, code, name, connectionName) },
             enabled = !state.loading && url.isNotBlank() && code.length == 6 && name.isNotBlank(),
             modifier = Modifier.fillMaxWidth(),
         ) {
@@ -163,9 +174,13 @@ private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
     var tab by remember { mutableIntStateOf(0) }
     var detailOpen by rememberSaveable { mutableStateOf(false) }
     var confirmDisconnect by remember { mutableStateOf(false) }
+    var showConnections by remember { mutableStateOf(false) }
     var confirmPush by remember { mutableStateOf(false) }
     var showNewTask by remember { mutableStateOf(false) }
     var settingsThreadId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(showNewTask, settingsThreadId) {
+        if (showNewTask || settingsThreadId != null) repository.refreshModels()
+    }
     var diffThreadId by remember { mutableStateOf<String?>(null) }
     var selectedProjectKey by rememberSaveable { mutableStateOf(ProjectGroup.ALL_KEY) }
     val groups = remember(state.tasks) { groupTasksByProject(state.tasks) }
@@ -187,6 +202,13 @@ private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
         ) selectedProjectKey = ProjectGroup.ALL_KEY
     }
 
+    LaunchedEffect(detailOpen, selected?.threadId, selected?.status) {
+        val threadId = selected?.threadId
+        if (detailOpen && threadId != null && threadId in state.completedReviewThreadIds) {
+            repository.markTaskViewed(threadId)
+        }
+    }
+
     ModalNavigationDrawer(
         drawerState = drawerState,
         gesturesEnabled = tab == 0 && !detailOpen,
@@ -194,15 +216,16 @@ private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
             ProjectDrawerContent(
                 groups = groups,
                 selectedKey = selectedProjectKey,
+                activeServerUrl = state.serverUrl,
                 onSelect = { key ->
                     selectedProjectKey = key
                     tab = 0
                     detailOpen = false
                     scope.launch { drawerState.close() }
                 },
-                onDisconnect = {
+                onManageConnections = {
                     scope.launch { drawerState.close() }
-                    confirmDisconnect = true
+                    showConnections = true
                 },
             )
         },
@@ -227,23 +250,19 @@ private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
                                 when {
                                     tab == 0 && detailOpen && selected != null -> selected.title
                                     tab == 0 -> selectedProjectName
-                                    else -> "待确认"
+                                    else -> "待处理"
                                 },
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
                             val status = when {
-                                !state.writeSupported -> "桌面版本不兼容，仅查看"
                                 !state.connected -> "手机连接中断，正在重连"
                                 !state.ipcConnected -> "Codex Desktop 未连接"
-                                !state.compatibilityVerified -> "兼容模式 · 未验证版本"
-                                tab == 0 && detailOpen && selected?.ownerAvailable != true -> "历史记录"
-                                tab == 0 && detailOpen && selected != null -> statusLabel(selected.status)
-                                else -> "已连接"
+                                state.desktopVersion != null -> "Codex Desktop ${state.desktopVersion}"
+                                else -> "Codex Desktop 已连接"
                             }
                             val statusColor = when {
-                                !state.connected || !state.ipcConnected || !state.writeSupported -> MaterialTheme.colorScheme.error
-                                !state.compatibilityVerified -> Color(0xFF8A5A00)
+                                !state.connected || !state.ipcConnected -> MaterialTheme.colorScheme.error
                                 else -> Color(0xFF197344)
                             }
                             Text(status, style = MaterialTheme.typography.labelSmall, color = statusColor)
@@ -276,7 +295,15 @@ private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
                 if (!imeVisible) {
                     NavigationBar {
                         NavigationBarItem(selected = tab == 0, onClick = { tab = 0 }, icon = { Icon(Icons.AutoMirrored.Filled.List, "任务") }, label = { Text("任务") })
-                        NavigationBarItem(selected = tab == 1, onClick = { tab = 1; detailOpen = false }, icon = { if (state.approvals.isNotEmpty()) Icon(Icons.Default.Warning, "待确认") else Icon(Icons.Default.Check, "无待确认") }, label = { Text("审批 ${state.approvals.size}") })
+                        NavigationBarItem(
+                            selected = tab == 1,
+                            onClick = { tab = 1; detailOpen = false },
+                            icon = {
+                                if (state.pendingTaskCount > 0) Icon(Icons.Default.Warning, "有待处理事项")
+                                else Icon(Icons.Default.Check, "无待处理事项")
+                            },
+                            label = { Text("待处理 ${state.pendingTaskCount}") },
+                        )
                     }
                 }
             },
@@ -295,15 +322,33 @@ private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
                     )
                 } else {
                     Box(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-                        ApprovalsPane(
-                            state.approvals,
-                            repository,
-                            state.writeSupported && state.connected && state.ipcConnected && !state.loading,
+                        PendingPane(
+                            state = state,
+                            repository = repository,
+                            writeSupported = state.writeSupported && state.connected && state.ipcConnected && !state.loading,
+                            onOpenTask = { threadId ->
+                                repository.select(threadId)
+                                tab = 0
+                                detailOpen = true
+                            },
                         )
                     }
                 }
             }
         }
+    }
+    if (showConnections) {
+        ConnectionManagerDialog(
+            state = state,
+            onDismiss = { showConnections = false },
+            onSwitch = repository::switchServerUrl,
+            onAdd = repository::addServerUrl,
+            onRemove = repository::removeServerUrl,
+            onClearPairing = {
+                showConnections = false
+                confirmDisconnect = true
+            },
+        )
     }
     if (confirmDisconnect) {
         AlertDialog(
@@ -375,6 +420,98 @@ private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
 }
 
 @Composable
+internal fun ConnectionManagerDialog(
+    state: RemoteState,
+    onDismiss: () -> Unit,
+    onSwitch: (String) -> Unit,
+    onAdd: (String, String) -> Unit,
+    onRemove: (String) -> Unit,
+    onClearPairing: () -> Unit,
+) {
+    var newUrl by remember { mutableStateOf("") }
+    var newName by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("连接地址") },
+        text = {
+            Column(
+                Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    "同一台电脑可保存 Tailscale 和局域网地址，切换时不需要重新配对。",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                state.serverAddresses.forEach { address ->
+                    val url = address.serverUrl
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !state.loading) { onSwitch(url) }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = url == state.serverUrl,
+                            onClick = { onSwitch(url) },
+                            enabled = !state.loading,
+                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(address.name, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                url,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (state.serverAddresses.size > 1) {
+                            IconButton(
+                                onClick = { onRemove(url) },
+                                enabled = !state.loading,
+                            ) {
+                                Icon(Icons.Default.Delete, "删除地址 $url")
+                            }
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    label = { Text("地址名称") },
+                    placeholder = { Text("例如：Tailscale") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = newUrl,
+                    onValueChange = { newUrl = it },
+                    label = { Text("新增当前电脑的地址") },
+                    placeholder = { Text("http://192.168.x.x:8766") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Button(
+                    onClick = {
+                        onAdd(newName, newUrl)
+                        newName = ""
+                        newUrl = ""
+                    },
+                    enabled = !state.loading && newUrl.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("保存并切换") }
+                state.error?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } },
+        dismissButton = {
+            TextButton(onClick = onClearPairing) { Text("清除全部配对") }
+        },
+    )
+}
+
+@Composable
 private fun TasksPane(
     state: RemoteState,
     repository: RemoteRepository,
@@ -412,6 +549,12 @@ private fun TasksPane(
         queued = state.queueByThread[selected.threadId].orEmpty(),
         queueReady = state.queueHashByThread.containsKey(selected.threadId),
         attachments = state.attachmentsByThread[selected.threadId].orEmpty(),
+        taskMediaById = state.taskMediaById,
+        onLoadTaskMedia = { repository.loadTaskMedia(selected.threadId, it) },
+        loadingTaskMediaIds = state.loadingTaskMediaIds,
+        failedTaskMediaIds = state.failedTaskMediaIds,
+        workspaceFiles = state.workspaceFiles,
+        workspaceFilesLoading = state.workspaceFilesLoading,
         models = state.models,
         capabilities = state.capabilities,
         sending = selected.threadId in state.sendingThreads,
@@ -424,37 +567,68 @@ private fun TasksPane(
         onOpenSettings = { onOpenSettings(selected.threadId) },
         onAttachmentsSelected = { repository.addAttachments(selected.threadId, it) },
         onRemoveAttachment = { repository.removeAttachment(selected.threadId, it) },
+        onOpenResource = { repository.openTaskResource(selected.threadId, it) },
+        onLoadWorkspaceFiles = { repository.loadWorkspaceFiles(selected.threadId, it) },
+        onWorkspaceFileSelected = { repository.addWorkspaceAttachment(selected.threadId, it) },
     )
 }
 
 @Composable
-private fun ApprovalsPane(approvals: List<ApprovalDto>, repository: RemoteRepository, writeSupported: Boolean) {
+private fun PendingPane(
+    state: RemoteState,
+    repository: RemoteRepository,
+    writeSupported: Boolean,
+    onOpenTask: (String) -> Unit,
+) {
     var answering by remember { mutableStateOf<ApprovalDto?>(null) }
+    val approvalThreadIds = state.approvals.map { it.threadId }
+    val completedThreadIds = state.tasks
+        .filter { it.threadId in state.completedReviewThreadIds }
+        .sortedByDescending { it.updatedAt ?: 0L }
+        .map { it.threadId }
+    val pendingThreadIds = (approvalThreadIds + completedThreadIds).distinct()
     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxSize()) {
-        if (approvals.isEmpty()) item { Text("当前没有待确认操作", modifier = Modifier.padding(vertical = 24.dp)) }
-        items(approvals, key = { it.requestId }) { approval ->
+        if (pendingThreadIds.isEmpty()) {
+            item { Text("当前没有待处理事项", modifier = Modifier.padding(vertical = 24.dp)) }
+        }
+        items(pendingThreadIds, key = { it }) { threadId ->
+            val task = state.tasks.firstOrNull { it.threadId == threadId }
+            val approvals = state.approvals.filter { it.threadId == threadId }
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.White),
                 shape = MaterialTheme.shapes.small,
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(Modifier.padding(12.dp)) {
-                    Text(approval.method.substringAfterLast('/'), fontWeight = FontWeight.Medium)
-                    Text(approval.threadId.take(12), style = MaterialTheme.typography.labelSmall)
-                    Spacer(Modifier.height(10.dp))
-                    if (approval.method == "item/tool/requestUserInput") {
-                        Button(
-                            onClick = { answering = approval },
-                            enabled = writeSupported,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text("回答") }
-                    } else {
-                        ApprovalDecisionActions(
-                            enabled = writeSupported,
-                            onAccept = { repository.respondApproval(approval.requestId, "accept") },
-                            onDecline = { repository.respondApproval(approval.requestId, "decline") },
-                            onCancel = { repository.respondApproval(approval.requestId, "cancel") },
+                    Text(task?.title ?: threadId.take(12), fontWeight = FontWeight.Medium)
+                    if (threadId in state.completedReviewThreadIds) {
+                        Text(
+                            if (task?.status == "failed") "运行失败待查看" else "已完成待查看",
+                            color = if (task?.status == "failed") MaterialTheme.colorScheme.error else Color(0xFF197344),
+                            style = MaterialTheme.typography.labelMedium,
                         )
+                        TextButton(onClick = { onOpenTask(threadId) }) { Text("查看结果") }
+                    }
+                    approvals.forEach { approval ->
+                        if (threadId in state.completedReviewThreadIds || approval != approvals.first()) {
+                            androidx.compose.material3.HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                        }
+                        Text(approvalLabel(approval.method), style = MaterialTheme.typography.labelLarge)
+                        Spacer(Modifier.height(8.dp))
+                        if (approval.method == "item/tool/requestUserInput") {
+                            Button(
+                                onClick = { answering = approval },
+                                enabled = writeSupported,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text("回答") }
+                        } else {
+                            ApprovalDecisionActions(
+                                enabled = writeSupported,
+                                onAccept = { repository.respondApproval(approval.requestId, "accept") },
+                                onDecline = { repository.respondApproval(approval.requestId, "decline") },
+                                onCancel = { repository.respondApproval(approval.requestId, "cancel") },
+                            )
+                        }
                     }
                 }
             }
@@ -470,6 +644,14 @@ private fun ApprovalsPane(approvals: List<ApprovalDto>, repository: RemoteReposi
             },
         )
     }
+}
+
+private fun approvalLabel(method: String): String = when (method) {
+    "item/tool/requestUserInput" -> "Codex 需要你的回答"
+    "item/commandExecution/requestApproval" -> "运行命令需要确认"
+    "item/fileChange/requestApproval" -> "修改文件需要确认"
+    "item/permissions/requestApproval" -> "权限请求需要确认"
+    else -> "操作需要确认"
 }
 
 @Composable
