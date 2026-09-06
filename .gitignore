@@ -10,6 +10,11 @@ Thumbs.db
 /desktop_bridge/*.log
 /desktop_bridge/coverage/
 
+# Windows launcher build and package output
+/windows_launcher/bin/
+/windows_launcher/obj/
+/windows_launcher/release/
+
 # Android and Gradle
 /android/.gradle/
 /android/.kotlin/

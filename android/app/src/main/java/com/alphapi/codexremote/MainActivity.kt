@@ -47,6 +47,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.DrawerValue
@@ -74,6 +75,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -175,6 +177,8 @@ private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
     var detailOpen by rememberSaveable { mutableStateOf(false) }
     var confirmDisconnect by remember { mutableStateOf(false) }
     var showConnections by remember { mutableStateOf(false) }
+    var showUpdates by remember { mutableStateOf(false) }
+    var updateState by remember { mutableStateOf<UpdateState>(UpdateState.Idle) }
     var confirmPush by remember { mutableStateOf(false) }
     var showNewTask by remember { mutableStateOf(false) }
     var settingsThreadId by remember { mutableStateOf<String?>(null) }
@@ -186,6 +190,8 @@ private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
     val groups = remember(state.tasks) { groupTasksByProject(state.tasks) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val updater = remember { AppUpdater(context.applicationContext) }
     val imeVisible = WindowInsets.isImeVisible
     val selected = state.tasks.firstOrNull { it.threadId == state.selectedThreadId }
     val canWrite = selected?.ownerAvailable == true && state.writeSupported &&
@@ -209,6 +215,12 @@ private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
         }
     }
 
+    LaunchedEffect(Unit) {
+        val result = updater.check()
+        updateState = result
+        if (result is UpdateState.Available) showUpdates = true
+    }
+
     ModalNavigationDrawer(
         drawerState = drawerState,
         gesturesEnabled = tab == 0 && !detailOpen,
@@ -226,6 +238,12 @@ private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
                 onManageConnections = {
                     scope.launch { drawerState.close() }
                     showConnections = true
+                },
+                onCheckUpdates = {
+                    scope.launch { drawerState.close() }
+                    showUpdates = true
+                    updateState = UpdateState.Checking
+                    scope.launch { updateState = updater.check() }
                 },
             )
         },
@@ -350,6 +368,30 @@ private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
             },
         )
     }
+    if (showUpdates) {
+        AppUpdateDialog(
+            state = updateState,
+            onDismiss = { showUpdates = false },
+            onRetry = {
+                updateState = UpdateState.Checking
+                scope.launch { updateState = updater.check() }
+            },
+            onDownload = { update ->
+                updateState = UpdateState.Downloading(update)
+                scope.launch {
+                    updateState = try {
+                        val apk = updater.download(update)
+                        val ready = UpdateState.ReadyToInstall(update, apk)
+                        if (updater.install(apk)) showUpdates = false
+                        ready
+                    } catch (error: Exception) {
+                        UpdateState.Error(error.message ?: "下载更新失败")
+                    }
+                }
+            },
+            onInstall = { ready -> updater.install(ready.apk) },
+        )
+    }
     if (confirmDisconnect) {
         AlertDialog(
             onDismissRequest = { confirmDisconnect = false },
@@ -417,6 +459,77 @@ private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
             onDismiss = { diffThreadId = null },
         )
     }
+}
+
+@Composable
+private fun AppUpdateDialog(
+    state: UpdateState,
+    onDismiss: () -> Unit,
+    onRetry: () -> Unit,
+    onDownload: (AppUpdate) -> Unit,
+    onInstall: (UpdateState.ReadyToInstall) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                when (state) {
+                    is UpdateState.Available -> "发现新版本 ${state.update.version}"
+                    is UpdateState.Downloading -> "正在下载 ${state.update.version}"
+                    is UpdateState.ReadyToInstall -> "安装 ${state.update.version}"
+                    UpdateState.Current -> "已经是最新版"
+                    is UpdateState.Error -> "检查更新失败"
+                    else -> "检查更新"
+                },
+            )
+        },
+        text = {
+            when (state) {
+                UpdateState.Idle, UpdateState.Checking -> Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    CircularProgressIndicator(Modifier.height(24.dp))
+                    Text("正在从 GitHub Releases 获取版本信息...")
+                }
+                UpdateState.Current -> Text("当前版本 ${BuildConfig.VERSION_NAME}，暂时没有更高版本。")
+                is UpdateState.Available -> Column(
+                    Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text("当前 ${BuildConfig.VERSION_NAME}  ·  最新 ${state.update.version}")
+                    if (state.update.notes.isNotBlank()) {
+                        HorizontalDivider()
+                        Text(state.update.notes, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                is UpdateState.Downloading -> Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    CircularProgressIndicator(Modifier.height(24.dp))
+                    Text("APK 正在下载，完成后会打开 Android 系统安装界面。")
+                }
+                is UpdateState.ReadyToInstall -> Text(
+                    "APK 已下载。点击继续安装；如果 Android 先打开“允许安装未知应用”，允许后返回这里再点一次。",
+                )
+                is UpdateState.Error -> Text(state.message, color = MaterialTheme.colorScheme.error)
+            }
+        },
+        confirmButton = {
+            when (state) {
+                is UpdateState.Available -> Button(onClick = { onDownload(state.update) }) { Text("下载并安装") }
+                is UpdateState.ReadyToInstall -> Button(onClick = { onInstall(state) }) { Text("继续安装") }
+                is UpdateState.Error -> Button(onClick = onRetry) { Text("重试") }
+                else -> TextButton(onClick = onDismiss) { Text("关闭") }
+            }
+        },
+        dismissButton = {
+            if (state is UpdateState.Available || state is UpdateState.ReadyToInstall || state is UpdateState.Error) {
+                TextButton(onClick = onDismiss) { Text("稍后") }
+            }
+        },
+    )
 }
 
 @Composable

@@ -154,6 +154,13 @@ export class PairingService {
     return this.expiresAt;
   }
 
+  rotate(): { code: string; expiresAt: number } {
+    if (this.pairingInProgress) throw new Error("pairing-in-progress");
+    this.code = generatePairingCode();
+    this.expiresAt = this.now() + 10 * 60_000;
+    return { code: this.code, expiresAt: this.expiresAt };
+  }
+
   async pair(input: {
     code: string;
     name: string;

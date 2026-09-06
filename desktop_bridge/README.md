@@ -10,7 +10,9 @@ Bridge 运行在 Codex Desktop 同一台 Windows 电脑上。它用私有 `codex
 - Node.js 22 或更新版本
 - Android 手机通过可信局域网或同一 Tailscale tailnet 连接电脑
 
-启动：
+普通使用请直接运行 GitHub Release 中 Windows 包的 `CodexRemoteManager.exe`。它会在图形界面中显示 Bridge/IPC 状态、配对码、IP、端口、Tailscale/LAN 地址，并提供启动、停止、重启、托盘后台运行和登录自启动。
+
+以下脚本仅作为源码开发和故障排查后备：
 
 ```powershell
 .\start-bridge.ps1
@@ -31,6 +33,8 @@ Bridge 运行在 Codex Desktop 同一台 Windows 电脑上。它用私有 `codex
 Bridge 可以先于 Codex Desktop 启动，并会自动重连 `codex-ipc`。因此之后打开 Codex Desktop 时无需再次启动 Bridge。撤销自启使用 `remove-autostart.ps1`。自启不等于开放公网端口，也不会创建防火墙规则。
 
 默认监听 `0.0.0.0:8766`。终端会显示可用的 LAN 地址和十分钟有效的六位配对码。设备记录保存在 `%APPDATA%\OneSCodexRemote\devices.json`，其中只有令牌哈希，没有明文令牌。
+
+Windows 管理器还会使用仅允许真实回环连接访问的 `/v1/local/*` 接口读取状态、轮换临时配对码和撤销指定设备。该接口不会接受局域网或 Tailscale 请求；轮换配对码和重启 Bridge 都不会撤销已有设备令牌，只有用户在设备下拉列表中确认删除的设备会失效。
 
 脚本不会改 Windows 防火墙。如果手机无法访问，而网络配置为“专用网络”，可在管理员 PowerShell 中手动放行：
 

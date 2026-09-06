@@ -20,10 +20,10 @@ adb install -r .\app\build\outputs\apk\debug\app-debug.apk
 
 ## 配对
 
-1. 电脑运行 `desktop_bridge\start-bridge.ps1`。
+1. 电脑运行 Windows 包中的 `CodexRemoteManager.exe`。
 2. 手机与电脑连接同一个可信 Wi-Fi，或登录到同一 Tailscale tailnet。
-3. 在 App 中填写 Bridge 终端显示的 `http://局域网IP:8766`；使用 Tailscale 时也可填写电脑的 `100.64.0.0/10` 地址、MagicDNS 单标签主机名或 `*.ts.net` 名称。
-4. 输入终端显示的六位配对码，完成配对。
+3. 在 App 中填写管理器显示的完整连接地址；使用 Tailscale 时也可填写电脑的 `100.64.0.0/10` 地址、MagicDNS 单标签主机名或 `*.ts.net` 名称。
+4. 输入管理器显示的六位配对码，完成配对。
 5. 允许通知权限，并允许应用在后台持续运行。
 
 App 会拒绝公网 IP 和公网域名。电脑改换网络后，可从左侧菜单的“连接地址”新增或切换 URL；只有更换为另一台电脑时才需要清除配对。
@@ -48,6 +48,7 @@ App 会拒绝公网 IP 和公网域名。电脑改换网络后，可从左侧菜
 - `isSecret` 问题不会通过当前 HTTP 局域网链路发送，必须回桌面处理。
 - “请求推送”必须再次确认，之后只是把受控指令发给 Codex；Git 仍由 Codex 检查并执行。
 - 语音输入直接点击手机输入法的麦克风按钮，不需要 App 自己录音。
+- 左侧菜单“检查更新”会读取 GitHub Releases；发现更高版本后可下载 APK 并交给 Android 系统安装器确认更新。
 
 ## 后台与通知
 

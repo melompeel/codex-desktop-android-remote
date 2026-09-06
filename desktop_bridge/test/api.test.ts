@@ -37,6 +37,61 @@ describe("Bridge HTTP API", () => {
     );
   });
 
+  it("exposes management details only to the local computer", async () => {
+    const shutdown = vi.fn();
+    const { app, registry } = setup(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { requestShutdown: shutdown },
+    );
+    await registry.issue("device-local", "Pixel", "android");
+
+    const local = await app.inject({ method: "GET", url: "/v1/local/status" });
+    expect(local.statusCode).toBe(200);
+    expect(local.json()).toMatchObject({
+      bridge: { host: "0.0.0.0", port: 8766 },
+      ipc: "connected",
+      pairing: { code: "654321" },
+      devices: [{ name: "Pixel", kind: "android" }],
+    });
+
+    const remote = await app.inject({
+      method: "GET",
+      url: "/v1/local/status",
+      remoteAddress: "100.100.10.20",
+    });
+    expect(remote.statusCode).toBe(403);
+
+    const rotated = await app.inject({
+      method: "POST",
+      url: "/v1/local/pairing/rotate",
+    });
+    expect(rotated.statusCode).toBe(200);
+    expect(rotated.json<{ pairing: { code: string } }>().pairing.code).not.toBe("654321");
+    expect(registry.list()).toHaveLength(1);
+
+    const removed = await app.inject({
+      method: "DELETE",
+      url: "/v1/local/devices/device-local",
+    });
+    expect(removed.statusCode).toBe(200);
+    expect(registry.list()).toHaveLength(0);
+
+    const repeatedRemoval = await app.inject({
+      method: "DELETE",
+      url: "/v1/local/devices/device-local",
+    });
+    expect(repeatedRemoval.statusCode).toBe(404);
+
+    const stopped = await app.inject({ method: "POST", url: "/v1/local/shutdown" });
+    expect(stopped.statusCode).toBe(202);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(shutdown).toHaveBeenCalledOnce();
+  });
+
   it("pairs a device and requires a fresh HMAC signature", async () => {
     const { app } = setup();
     const paired = await app.inject({
@@ -877,6 +932,10 @@ appOptions: TestBridgeAppOptions = {}) {
     pairing,
     ipcStatus: () => "connected",
     asrStatus: () => ({ available: false, reason: "not-configured" }),
+    localStatus: () => ({ host: "0.0.0.0", port: 8766 }),
+    ...(appOptions.requestShutdown
+      ? { requestShutdown: appOptions.requestShutdown }
+      : {}),
     ...(transcriber ? { transcriber } : {}),
     ...(attachments ? { attachments } : {}),
   }, appOptions);
@@ -887,6 +946,7 @@ appOptions: TestBridgeAppOptions = {}) {
 type TestBridgeAppOptions = {
   webSocketHeartbeatIntervalMs?: number;
   webSocketMaxBufferedBytes?: number;
+  requestShutdown?: () => void;
 };
 
 function socketOpened(socket: WebSocket): Promise<void> {

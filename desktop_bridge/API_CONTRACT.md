@@ -5,7 +5,8 @@ clients may continue to omit the new message fields and use `delivery: "auto"`.
 
 ## Authentication
 
-Every route except `GET /v1/health` and `POST /v1/pair` requires:
+Every route except `GET /v1/health`, `POST /v1/pair`, and the loopback-only
+`/v1/local/*` manager routes requires:
 
 - `Authorization: Bearer <device-token>`
 - `X-Request-Id: <unique-id>`
@@ -15,6 +16,20 @@ Every route except `GET /v1/health` and `POST /v1/pair` requires:
 The HMAC input is `METHOD`, the exact path including its encoded query string, timestamp,
 request ID, and the SHA-256 hash of the raw body, joined with line feeds. Query order and
 percent encoding must be identical in the request and signature input.
+
+## Windows manager
+
+The Windows manager uses three endpoints that accept connections only when the real
+socket peer is `127.0.0.1` or `::1`; proxy headers are ignored:
+
+- `GET /v1/local/status` returns the Bridge PID, listen host and port, Desktop/runtime
+  versions, LAN and Tailscale addresses, IPC state, temporary pairing code, expiry, and
+  paired-device summaries.
+- `POST /v1/local/pairing/rotate` replaces only the temporary code. Existing device
+  credentials remain valid.
+- `DELETE /v1/local/devices/:deviceId` revokes one paired device without affecting the
+  others.
+- `POST /v1/local/shutdown` requests a graceful Bridge shutdown.
 
 ## Capabilities and models
 

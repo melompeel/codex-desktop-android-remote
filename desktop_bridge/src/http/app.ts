@@ -44,6 +44,8 @@ export type BridgeAppDependencies = {
   transcriber?: VoiceTranscriber;
   voiceSessions?: VoiceSessionStore;
   attachments?: AttachmentStore;
+  localStatus?: () => Record<string, unknown>;
+  requestShutdown?: () => void;
 };
 
 export type BridgeAppOptions = {
@@ -123,6 +125,13 @@ export function createBridgeApp(
   );
 
   app.addHook("preHandler", async (request, reply) => {
+    if (request.url.startsWith("/v1/local/")) {
+      if (!isLoopbackAddress(request.socket.remoteAddress)) {
+        await reply.code(403).send({ error: "local-access-only" });
+        return reply;
+      }
+      return;
+    }
     if (request.url === "/v1/health" || request.url === "/v1/pair") return;
     const authorization = request.headers.authorization ?? "";
     const token = authorization.startsWith("Bearer ")
@@ -187,6 +196,43 @@ export function createBridgeApp(
     compatibility: dependencies.controller.compatibility,
     asr: dependencies.asrStatus(),
   }));
+
+  app.get("/v1/local/status", async () => ({
+    bridge: dependencies.localStatus?.() ?? {},
+    ipc: dependencies.ipcStatus(),
+    compatibility: dependencies.controller.compatibility,
+    asr: dependencies.asrStatus(),
+    pairing: {
+      code: dependencies.pairing.currentCode,
+      expiresAt: dependencies.pairing.codeExpiresAt,
+    },
+    devices: dependencies.registry.list().map(({ deviceId, name, kind, createdAt }) => ({
+      deviceId,
+      name,
+      kind,
+      createdAt,
+    })),
+  }));
+
+  app.post("/v1/local/pairing/rotate", async () => ({
+    pairing: dependencies.pairing.rotate(),
+  }));
+
+  app.delete("/v1/local/devices/:deviceId", async (request, reply) => {
+    const deviceId = routeParam(request, "deviceId");
+    const existing = dependencies.registry.list().find((device) => device.deviceId === deviceId);
+    if (!existing) return reply.code(404).send({ error: "device-not-found" });
+    await dependencies.registry.revoke(deviceId);
+    return { ok: true };
+  });
+
+  app.post("/v1/local/shutdown", async (_request, reply) => {
+    if (!dependencies.requestShutdown) {
+      return reply.code(503).send({ error: "shutdown-unavailable" });
+    }
+    setImmediate(dependencies.requestShutdown);
+    return reply.code(202).send({ ok: true });
+  });
 
   app.get("/v1/capabilities", async () => ({
     capabilities: {
@@ -821,4 +867,9 @@ function readString(value: unknown): string | null {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isLoopbackAddress(address: string | undefined): boolean {
+  if (!address) return false;
+  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
 }

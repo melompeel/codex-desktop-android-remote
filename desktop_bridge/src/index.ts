@@ -37,6 +37,7 @@ const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
 
 const desktopVersion = await detectDesktopPackageVersion();
 const runtime = await findCodexRuntime();
+const startedAt = Date.now();
 const store = new BridgeStore();
 const ipc = new CodexIpcClient({ clientType: "codex-desktop-android-remote" });
 const adapter = new CodexIpcAdapter(
@@ -63,6 +64,8 @@ const attachments = await AttachmentStore.open(
 const transcriber = process.env.WHISPER_SERVER_URL
   ? new WhisperHttpClient(process.env.WHISPER_SERVER_URL)
   : new UnavailableTranscriber();
+
+let requestShutdown = () => {};
 
 ipc.onBroadcast((frame) => {
   try {
@@ -100,6 +103,20 @@ const app = createBridgeApp({
   asrStatus: () => transcriber.status(),
   transcriber,
   attachments,
+  localStatus: () => ({
+    host,
+    port,
+    pid: process.pid,
+    startedAt,
+    desktopVersion,
+    runtimeVersion: runtime.version,
+    addresses: lanAddresses().map((address) => ({
+      address,
+      kind: isTailscaleAddress(address) ? "tailscale" : "lan",
+      url: `http://${address}:${port}`,
+    })),
+  }),
+  requestShutdown: () => requestShutdown(),
 });
 
 await app.listen({ host, port });
@@ -114,6 +131,7 @@ const shutdown = async () => {
   await app.close();
   process.exit(0);
 };
+requestShutdown = () => void shutdown();
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
 
@@ -125,4 +143,11 @@ function lanAddresses(): string[] {
         entry != null && entry.family === "IPv4" && !entry.internal,
     )
     .map((entry) => entry.address);
+}
+
+function isTailscaleAddress(address: string): boolean {
+  const match = address.match(/^100\.(\d{1,3})\./);
+  if (!match) return false;
+  const secondOctet = Number(match[1]);
+  return secondOctet >= 64 && secondOctet <= 127;
 }

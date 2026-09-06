@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LaptopWindows
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -59,6 +60,7 @@ internal fun ProjectDrawerContent(
     activeServerUrl: String,
     onSelect: (String) -> Unit,
     onManageConnections: () -> Unit,
+    onCheckUpdates: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val allTasks = groups.sumOf { it.tasks.size }
@@ -122,6 +124,19 @@ internal fun ProjectDrawerContent(
             onClick = onManageConnections,
             icon = { Icon(Icons.Default.Link, null) },
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+        )
+        NavigationDrawerItem(
+            label = { Text("检查更新") },
+            selected = false,
+            onClick = onCheckUpdates,
+            icon = { Icon(Icons.Default.SystemUpdate, null) },
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        Text(
+            "当前版本 ${BuildConfig.VERSION_NAME}",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 10.dp),
         )
     }
 }
