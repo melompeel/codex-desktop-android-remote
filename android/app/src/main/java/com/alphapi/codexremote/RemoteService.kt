@@ -16,6 +16,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 class RemoteService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -74,7 +75,15 @@ class RemoteService : Service() {
                                 .setSmallIcon(android.R.drawable.stat_sys_warning)
                                 .setContentTitle("Codex 需要确认")
                                 .setContentText(approval.method.substringAfterLast('/'))
-                                .setContentIntent(openAppIntent())
+                                .setContentIntent(openAppIntent(
+                                    requestCode = approval.requestId.hashCode(),
+                                    route = RemoteNotificationRoute(
+                                        kind = notificationKindForApproval(approval.method),
+                                        threadId = approval.threadId,
+                                        requestId = approval.requestId,
+                                        nonce = UUID.randomUUID().toString(),
+                                    ),
+                                ))
                                 .setAutoCancel(true)
                                 .build(),
                         )
@@ -93,7 +102,14 @@ class RemoteService : Service() {
                                 .setSmallIcon(android.R.drawable.stat_notify_chat)
                                 .setContentTitle(if (task?.status == "failed") "Codex 任务运行失败" else "Codex 任务已完成")
                                 .setContentText(task?.title ?: "点击查看结果")
-                                .setContentIntent(openAppIntent())
+                                .setContentIntent(openAppIntent(
+                                    requestCode = completionNotificationId(threadId),
+                                    route = RemoteNotificationRoute(
+                                        kind = RemoteNotificationKind.COMPLETION,
+                                        threadId = threadId,
+                                        nonce = UUID.randomUUID().toString(),
+                                    ),
+                                ))
                                 .setAutoCancel(true)
                                 .build(),
                         )
@@ -140,11 +156,18 @@ class RemoteService : Service() {
             .setOngoing(true)
             .build()
 
-    private fun openAppIntent(): PendingIntent = PendingIntent.getActivity(
+    private fun openAppIntent(
+        requestCode: Int = 0,
+        route: RemoteNotificationRoute? = null,
+    ): PendingIntent = PendingIntent.getActivity(
         this,
-        0,
+        requestCode,
         Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            if (route != null) {
+                action = "$packageName.OPEN_NOTIFICATION.${route.nonce}"
+                putRemoteNotificationRoute(route)
+            }
         },
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )

@@ -7,6 +7,88 @@ internal data class ActivityPresentation(
     val detail: String,
 )
 
+internal sealed interface ConversationBlock {
+    data class Item(val item: TimelineItemDto) : ConversationBlock
+    data class Process(
+        val turnId: String,
+        val label: String,
+        val items: List<TimelineItemDto>,
+    ) : ConversationBlock
+}
+
+internal fun presentConversation(items: List<TimelineItemDto>): List<ConversationBlock> {
+    if (items.isEmpty()) return emptyList()
+    val result = mutableListOf<ConversationBlock>()
+    var cursor = 0
+    while (cursor < items.size) {
+        val turnId = items[cursor].turnId
+        val end = items.indexOfFirst(cursor) { it.turnId != turnId }
+            .takeIf { it >= 0 }
+            ?: items.size
+        result += presentTurn(items.subList(cursor, end))
+        cursor = end
+    }
+    return result
+}
+
+private fun presentTurn(items: List<TimelineItemDto>): List<ConversationBlock> {
+    val finalAnchor = items.indexOfLast { it.kind == "assistant" }
+        .takeIf { it >= 0 }
+        ?: items.indexOfLast { it.kind == "image" }.takeIf { it >= 0 }
+    val finalSource = finalAnchor?.let { sourceItemId(items[it]) }
+    val durationMs = items.firstNotNullOfOrNull { it.turnDurationMs }
+    val result = mutableListOf<ConversationBlock>()
+    val process = mutableListOf<TimelineItemDto>()
+
+    fun flushProcess() {
+        if (process.isEmpty()) return
+        result += ConversationBlock.Process(
+            turnId = items.first().turnId,
+            label = durationMs?.let(::formatTurnDuration) ?: "处理过程",
+            items = process.toList(),
+        )
+        process.clear()
+    }
+
+    items.forEach { item ->
+        val visible = item.kind == "user" || item.kind == "userImage" ||
+            (finalSource != null && sourceItemId(item) == finalSource &&
+                (item.kind == "assistant" || item.kind == "image"))
+        if (visible) {
+            flushProcess()
+            result += ConversationBlock.Item(item)
+        } else {
+            process += item
+        }
+    }
+    flushProcess()
+    return result
+}
+
+private fun sourceItemId(item: TimelineItemDto): String = item.sourceItemId
+    ?: item.id.substringBefore(":text:").substringBefore(":image:")
+
+private fun formatTurnDuration(durationMs: Long): String {
+    val totalSeconds = (durationMs.coerceAtLeast(0L) / 1_000L)
+    val hours = totalSeconds / 3_600L
+    val minutes = (totalSeconds % 3_600L) / 60L
+    val seconds = totalSeconds % 60L
+    return buildString {
+        append("用时 ")
+        if (hours > 0) append(hours).append("小时")
+        if (minutes > 0 || hours > 0) append(minutes).append("分钟")
+        append(seconds).append("秒")
+    }
+}
+
+private inline fun <T> List<T>.indexOfFirst(
+    startIndex: Int,
+    predicate: (T) -> Boolean,
+): Int {
+    for (index in startIndex until size) if (predicate(this[index])) return index
+    return -1
+}
+
 internal sealed interface MarkdownSegment {
     data class Prose(val markdown: String) : MarkdownSegment
     data class Code(val language: String?, val code: String) : MarkdownSegment

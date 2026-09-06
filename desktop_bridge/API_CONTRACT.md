@@ -85,6 +85,10 @@ provides it, allowing clients to detect work completed while disconnected.
 
 Timeline `ImageView` entries and assistant Markdown images use `kind: "image"`; images attached to
 user messages use `kind: "userImage"`. Both include an opaque `mediaId`.
+Timeline entries may also include `sourceItemId` and `turnDurationMs`. Clients use these
+additive fields to keep the final rich response together and label a collapsed turn process.
+When the compact timeline exceeds its item limit, user messages, user images, and each turn's
+final response are retained before intermediate process entries are trimmed.
 Fetch their bytes from `GET /v1/tasks/:threadId/media/:mediaId`. Local Markdown file
 links are rewritten to `codexremote://resource/<opaque-id>` and include resource metadata;
 download them with `GET /v1/tasks/:threadId/resources/:resourceId`. The Bridge resolves

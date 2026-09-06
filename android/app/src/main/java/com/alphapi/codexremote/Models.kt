@@ -51,6 +51,8 @@ data class TimelineItemDto(
     val status: String? = null,
     val media: TimelineMediaDto? = null,
     val resources: List<TimelineResourceDto> = emptyList(),
+    val sourceItemId: String? = null,
+    val turnDurationMs: Long? = null,
 )
 
 @Serializable

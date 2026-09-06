@@ -117,6 +117,105 @@ describe("task presentation", () => {
     });
   });
 
+  it("keeps v11 canonical user images and exposes turn presentation metadata", () => {
+    const thread = {
+      threadId: "thread-canonical-user-image",
+      revision: 19,
+      state: {
+        turnHistory: {
+          kind: "canonical",
+          history: {
+            entitiesByKey: {
+              "turn:one": {
+                turnId: "turn-one",
+                status: "completed",
+                durationMs: 75432,
+                params: {
+                  input: [
+                    { type: "text", text: "查看图片" },
+                    { type: "localImage", path: "C:\\bridge\\phone.png" },
+                  ],
+                  attachments: [{
+                    label: "phone.png",
+                    path: "C:\\bridge\\phone.png",
+                    fsPath: "C:\\bridge\\phone.png",
+                  }],
+                },
+                items: [{
+                  id: "user-message-one",
+                  type: "userMessage",
+                  content: [
+                    { type: "text", text: "查看图片" },
+                    { type: "localImage", detail: null, path: "C:\\bridge\\phone.png" },
+                  ],
+                }],
+              },
+            },
+            islands: [{ entries: [{ value: "turn:one" }] }],
+          },
+        },
+      },
+    };
+
+    const detail = presentThread(thread);
+
+    expect(detail.items).toMatchObject([
+      {
+        kind: "user",
+        sourceItemId: "user-message-one",
+        turnDurationMs: 75432,
+      },
+      {
+        kind: "userImage",
+        sourceItemId: "user-message-one",
+        turnDurationMs: 75432,
+        media: { name: "phone.png", mimeType: "image/png" },
+      },
+    ]);
+    const media = detail.items[1]?.media;
+    expect(resolveThreadMedia(thread, media!.mediaId)).toEqual({
+      ...media,
+      fsPath: "C:\\bridge\\phone.png",
+    });
+  });
+
+  it("does not trim an early user image from a long-running turn", () => {
+    const processItems = Array.from({ length: 240 }, (_, index) => ({
+      id: `reasoning-${index}`,
+      type: "reasoning",
+      summary: [`step ${index}`],
+    }));
+    const thread = {
+      threadId: "thread-long-image",
+      revision: 31,
+      state: {
+        turns: [{
+          id: "turn-long",
+          status: "completed",
+          items: [
+            {
+              id: "user-long",
+              type: "userMessage",
+              content: [
+                { type: "text", text: "请查看长任务截图" },
+                { type: "localImage", path: "C:\\bridge\\long-task.png" },
+              ],
+            },
+            ...processItems,
+            { id: "final-long", type: "agentMessage", text: "处理完成" },
+          ],
+        }],
+      },
+    };
+
+    const detail = presentThread(thread);
+
+    expect(detail.items).toHaveLength(200);
+    expect(detail.items.map((item) => item.kind)).toContain("userImage");
+    expect(detail.items.find((item) => item.kind === "user")?.text).toBe("请查看长任务截图");
+    expect(detail.items.at(-1)).toMatchObject({ kind: "assistant", text: "处理完成" });
+  });
+
   it("turns assistant markdown images into ordered remote media items", () => {
     const thread = {
       threadId: "thread-markdown-image",

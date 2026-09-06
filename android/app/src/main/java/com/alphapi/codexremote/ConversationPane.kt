@@ -268,6 +268,7 @@ private fun ConversationTimeline(
     onLoadTaskMedia: (String) -> Unit,
 ) {
     val context = LocalContext.current
+    val blocks = remember(detail.items) { presentConversation(detail.items) }
     val resourcesById = remember(detail.items) {
         detail.items.flatMap { it.resources }.associateBy { it.resourceId }
     }
@@ -334,19 +335,42 @@ private fun ConversationTimeline(
                 }
             }
             itemsIndexed(
-                detail.items,
-                key = { _, item -> "${item.turnId}:${item.id}" },
-            ) { index, item ->
-                val startsTurn = index == 0 || detail.items[index - 1].turnId != item.turnId
+                blocks,
+                key = { _, block -> when (block) {
+                    is ConversationBlock.Item -> "${block.item.turnId}:${block.item.id}"
+                    is ConversationBlock.Process -> "${block.turnId}:process:${block.items.firstOrNull()?.id}"
+                } },
+            ) { index, block ->
+                val turnId = when (block) {
+                    is ConversationBlock.Item -> block.item.turnId
+                    is ConversationBlock.Process -> block.turnId
+                }
+                val previousTurnId = blocks.getOrNull(index - 1)?.let {
+                    when (it) {
+                        is ConversationBlock.Item -> it.item.turnId
+                        is ConversationBlock.Process -> it.turnId
+                    }
+                }
+                val startsTurn = index == 0 || previousTurnId != turnId
                 Spacer(Modifier.height(if (startsTurn) 18.dp else 8.dp))
-                ConversationEntry(
-                    item,
-                    markwon,
-                    taskMediaById[item.media?.mediaId],
-                    item.media?.mediaId in loadingTaskMediaIds,
-                    item.media?.mediaId in failedTaskMediaIds,
-                    onLoadTaskMedia,
-                )
+                when (block) {
+                    is ConversationBlock.Item -> ConversationEntry(
+                        block.item,
+                        markwon,
+                        taskMediaById[block.item.media?.mediaId],
+                        block.item.media?.mediaId in loadingTaskMediaIds,
+                        block.item.media?.mediaId in failedTaskMediaIds,
+                        onLoadTaskMedia,
+                    )
+                    is ConversationBlock.Process -> ProcessDisclosure(
+                        block,
+                        markwon,
+                        taskMediaById,
+                        loadingTaskMediaIds,
+                        failedTaskMediaIds,
+                        onLoadTaskMedia,
+                    )
+                }
             }
             if (detail.status == "active") {
                 item("working") {
@@ -366,6 +390,56 @@ private fun ConversationTimeline(
                 containerColor = MaterialTheme.colorScheme.surface,
             ) {
                 Icon(Icons.Default.KeyboardArrowDown, "回到最新消息")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProcessDisclosure(
+    block: ConversationBlock.Process,
+    markwon: Markwon,
+    taskMediaById: Map<String, File>,
+    loadingTaskMediaIds: Set<String>,
+    failedTaskMediaIds: Set<String>,
+    onLoadTaskMedia: (String) -> Unit,
+) {
+    var expanded by rememberSaveable(block.turnId, block.items.firstOrNull()?.id) {
+        mutableStateOf(false)
+    }
+    Column(Modifier.fillMaxWidth().animateContentSize().testTag("processDisclosure:${block.turnId}")) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                block.label,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF676762),
+            )
+            Icon(
+                if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                if (expanded) "收起处理过程" else "展开处理过程",
+                modifier = Modifier.size(20.dp),
+                tint = Color(0xFF676762),
+            )
+        }
+        if (expanded) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                block.items.forEach { item ->
+                    ConversationEntry(
+                        item,
+                        markwon,
+                        taskMediaById[item.media?.mediaId],
+                        item.media?.mediaId in loadingTaskMediaIds,
+                        item.media?.mediaId in failedTaskMediaIds,
+                        onLoadTaskMedia,
+                    )
+                }
             }
         }
     }
@@ -796,40 +870,10 @@ private fun MessageComposer(
                 .testTag("messageComposerContent")
                 .padding(horizontal = 8.dp, vertical = 7.dp),
         ) {
-            if (active && queueSupported) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = deliveryMode == DeliveryMode.STEER,
-                        onClick = { onDeliveryChange(DeliveryMode.STEER) },
-                        label = { Text("调整方向") },
-                    )
-                    FilterChip(
-                        selected = deliveryMode == DeliveryMode.QUEUE,
-                        onClick = { onDeliveryChange(DeliveryMode.QUEUE) },
-                        label = { Text("加入队列") },
-                    )
-                }
-            } else {
-                Text(
-                    if (active) "发送到当前轮次" else "开始新一轮",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-                )
-            }
-            if (attachments.isNotEmpty()) {
-                AttachmentPreviewRow(attachments, onRemoveAttachment)
-            }
-            OutlinedTextField(
-                value = value,
-                onValueChange = onValueChange,
-                placeholder = { Text("给 Codex 发消息") },
-                minLines = 1,
-                maxLines = 5,
-                modifier = Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.small,
-            )
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.fillMaxWidth().testTag("composerSetupControls"),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 if (attachmentsSupported) {
                     IconButton(onClick = onPickImages, modifier = Modifier.size(40.dp)) {
                         Icon(Icons.Default.AddPhotoAlternate, "选择图片", modifier = Modifier.size(20.dp))
@@ -855,6 +899,48 @@ private fun MessageComposer(
                         modifier = Modifier.padding(horizontal = 4.dp).weight(1f),
                     )
                 } else {
+                    Spacer(Modifier.weight(1f))
+                }
+            }
+            if (attachments.isNotEmpty()) {
+                AttachmentPreviewRow(attachments, onRemoveAttachment)
+            }
+            OutlinedTextField(
+                value = value,
+                onValueChange = onValueChange,
+                placeholder = { Text("给 Codex 发消息") },
+                minLines = 1,
+                maxLines = 5,
+                modifier = Modifier.fillMaxWidth().testTag("composerInput"),
+                shape = MaterialTheme.shapes.small,
+            )
+            Row(
+                Modifier.fillMaxWidth().testTag("composerDeliveryControls"),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (active && queueSupported) {
+                    Row(
+                        Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        FilterChip(
+                            selected = deliveryMode == DeliveryMode.STEER,
+                            onClick = { onDeliveryChange(DeliveryMode.STEER) },
+                            label = { Text("调整方向") },
+                        )
+                        FilterChip(
+                            selected = deliveryMode == DeliveryMode.QUEUE,
+                            onClick = { onDeliveryChange(DeliveryMode.QUEUE) },
+                            label = { Text("加入队列") },
+                        )
+                    }
+                } else {
+                    Text(
+                        if (active) "发送到当前轮次" else "开始新一轮",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                    )
                     Spacer(Modifier.weight(1f))
                 }
                 if (canStop) {

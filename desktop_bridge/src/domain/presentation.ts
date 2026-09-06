@@ -19,6 +19,8 @@ export type TimelineResource = {
 export type TimelineItem = {
   id: string;
   turnId: string;
+  sourceItemId?: string;
+  turnDurationMs?: number;
   kind: "user" | "userImage" | "assistant" | "command" | "file" | "plan" | "status" | "image";
   text: string;
   status?: string;
@@ -93,13 +95,23 @@ export function presentThread(thread: ThreadStream): TaskDetail {
     if (!turn) continue;
     const turnId = readString(turn.id) || readString(turn.turnId) || `turn-${turnIndex}`;
     const turnStatus = readStatus(turn.status);
+    const turnDurationMs = readTurnDurationMs(turn);
     const rawItems = Array.isArray(turn.items) ? turn.items : [];
     for (let itemIndex = 0; itemIndex < rawItems.length; itemIndex += 1) {
       const item = asRecord(rawItems[itemIndex]);
       if (!item) continue;
-      items.push(
-        ...presentItems(thread.threadId, item, turnId, itemIndex, turnStatus),
-      );
+      const sourceItemId = readString(item.id) || `${turnId}-${itemIndex}`;
+      items.push(...presentItems(
+        thread.threadId,
+        item,
+        turnId,
+        itemIndex,
+        turnStatus,
+      ).map((presented) => ({
+        ...presented,
+        sourceItemId,
+        ...(turnDurationMs !== undefined ? { turnDurationMs } : {}),
+      })));
     }
   }
   return {
@@ -107,9 +119,81 @@ export function presentThread(thread: ThreadStream): TaskDetail {
     title: readString(thread.state.title) || readString(thread.state.name) || "Untitled task",
     status: threadStatus(thread.state),
     revision: thread.revision,
-    items: items.slice(-MAX_ITEMS),
+    items: limitTimelineItems(items),
     ...presentThreadMetadata(thread.state),
   };
+}
+
+function limitTimelineItems(items: TimelineItem[]): TimelineItem[] {
+  if (items.length <= MAX_ITEMS) return items;
+  const protectedIndexes = new Set<number>();
+  const indexesByTurn = new Map<string, number[]>();
+  items.forEach((item, index) => {
+    if (item.kind === "user" || item.kind === "userImage") protectedIndexes.add(index);
+    const turnIndexes = indexesByTurn.get(item.turnId) ?? [];
+    turnIndexes.push(index);
+    indexesByTurn.set(item.turnId, turnIndexes);
+  });
+  for (const indexes of indexesByTurn.values()) {
+    const finalAssistantIndex = findLastTimelineIndex(items, indexes, "assistant");
+    const finalImageIndex = findLastTimelineIndex(items, indexes, "image");
+    const anchorIndex = finalAssistantIndex ?? finalImageIndex;
+    if (anchorIndex === undefined) continue;
+    const sourceItemId = items[anchorIndex]?.sourceItemId;
+    if (!sourceItemId) {
+      protectedIndexes.add(anchorIndex);
+      continue;
+    }
+    for (const index of indexes) {
+      const item = items[index];
+      if (
+        item?.sourceItemId === sourceItemId &&
+        (item.kind === "assistant" || item.kind === "image")
+      ) protectedIndexes.add(index);
+    }
+  }
+
+  const protectedList = [...protectedIndexes].sort((left, right) => left - right);
+  if (protectedList.length >= MAX_ITEMS) {
+    const retained = new Set(protectedList.slice(-MAX_ITEMS));
+    return items.filter((_, index) => retained.has(index));
+  }
+  const processBudget = MAX_ITEMS - protectedList.length;
+  const processIndexes = items
+    .map((_, index) => index)
+    .filter((index) => !protectedIndexes.has(index))
+    .slice(-processBudget);
+  const retained = new Set([...protectedList, ...processIndexes]);
+  return items.filter((_, index) => retained.has(index));
+}
+
+function findLastTimelineIndex(
+  items: TimelineItem[],
+  indexes: number[],
+  kind: TimelineItem["kind"],
+): number | undefined {
+  for (let offset = indexes.length - 1; offset >= 0; offset -= 1) {
+    const index = indexes[offset];
+    if (index !== undefined && items[index]?.kind === kind) return index;
+  }
+  return undefined;
+}
+
+function readTurnDurationMs(turn: Record<string, unknown>): number | undefined {
+  const direct = readNonNegativeNumber(turn.durationMs);
+  if (direct !== undefined) return direct;
+  const startedAt = readNonNegativeNumber(turn.turnStartedAtMs ?? turn.startedAtMs);
+  const completedAt = readNonNegativeNumber(turn.turnCompletedAtMs ?? turn.completedAtMs);
+  if (startedAt === undefined || completedAt === undefined || completedAt < startedAt) {
+    return undefined;
+  }
+  return completedAt - startedAt;
+}
+
+function readNonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
 }
 
 export function presentThreadMetadata(

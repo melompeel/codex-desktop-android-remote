@@ -3,6 +3,7 @@ package com.alphapi.codexremote
 import android.Manifest
 import android.os.Build
 import android.os.Bundle
+import android.content.Intent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -90,12 +91,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.MutableStateFlow
 
 class MainActivity : ComponentActivity() {
     private val viewModel: RemoteViewModel by viewModels()
+    private val notificationRoute = MutableStateFlow<RemoteNotificationRoute?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        notificationRoute.value = intent.remoteNotificationRoute()
         setContent {
             MaterialTheme(
                 colorScheme = lightColorScheme(
@@ -115,17 +119,31 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.RequestPermission(),
                 ) { }
                 val state by viewModel.state.collectAsState()
+                val route by notificationRoute.collectAsState()
                 LaunchedEffect(state.configured) {
                     if (state.configured && Build.VERSION.SDK_INT >= 33) {
                         permission.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }
                 }
                 Surface(Modifier.fillMaxSize(), color = Color(0xFFF7F7F5)) {
-                    if (state.configured) RemoteHome(state, viewModel.repository)
+                    if (state.configured) RemoteHome(
+                        state,
+                        viewModel.repository,
+                        route,
+                        onNotificationRouteConsumed = { consumed ->
+                            notificationRoute.compareAndSet(consumed, null)
+                        },
+                    )
                     else PairingScreen(state, viewModel::pair)
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        notificationRoute.value = intent.remoteNotificationRoute()
     }
 }
 
@@ -176,7 +194,12 @@ private fun PairingScreen(state: RemoteState, pair: (String, String, String, Str
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
+private fun RemoteHome(
+    state: RemoteState,
+    repository: RemoteRepository,
+    notificationRoute: RemoteNotificationRoute? = null,
+    onNotificationRouteConsumed: (RemoteNotificationRoute) -> Unit = {},
+) {
     var tab by remember { mutableIntStateOf(0) }
     var detailOpen by rememberSaveable { mutableStateOf(false) }
     var confirmDisconnect by remember { mutableStateOf(false) }
@@ -186,6 +209,7 @@ private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
     var confirmPush by remember { mutableStateOf(false) }
     var showNewTask by remember { mutableStateOf(false) }
     var settingsThreadId by remember { mutableStateOf<String?>(null) }
+    var pendingFocus by remember { mutableStateOf<RemoteNotificationRoute?>(null) }
     LaunchedEffect(showNewTask, settingsThreadId) {
         if (showNewTask || settingsThreadId != null) repository.refreshModels()
     }
@@ -210,6 +234,25 @@ private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
         if (selectedProjectKey != ProjectGroup.ALL_KEY && selectedProjectKey != OPEN_TASKS_KEY &&
             groups.none { it.key == selectedProjectKey }
         ) selectedProjectKey = ProjectGroup.ALL_KEY
+    }
+
+    LaunchedEffect(notificationRoute?.nonce) {
+        val route = notificationRoute ?: return@LaunchedEffect
+        when (route.kind) {
+            RemoteNotificationKind.COMPLETION -> {
+                repository.select(route.threadId)
+                tab = 0
+                detailOpen = true
+            }
+            RemoteNotificationKind.APPROVAL,
+            RemoteNotificationKind.USER_INPUT,
+            -> {
+                pendingFocus = route
+                tab = 1
+                detailOpen = false
+            }
+        }
+        onNotificationRouteConsumed(route)
     }
 
     LaunchedEffect(detailOpen, selected?.threadId, selected?.status) {
@@ -366,6 +409,7 @@ private fun RemoteHome(state: RemoteState, repository: RemoteRepository) {
                             state = state,
                             repository = repository,
                             writeSupported = state.writeSupported && state.connected && state.ipcConnected && !state.loading,
+                            focus = pendingFocus,
                             onOpenTask = { threadId ->
                                 repository.select(threadId)
                                 tab = 0
@@ -721,26 +765,48 @@ private fun PendingPane(
     state: RemoteState,
     repository: RemoteRepository,
     writeSupported: Boolean,
+    focus: RemoteNotificationRoute? = null,
     onOpenTask: (String) -> Unit,
 ) {
     var answering by remember { mutableStateOf<ApprovalDto?>(null) }
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     val approvalThreadIds = state.approvals.map { it.threadId }
     val completedThreadIds = state.tasks
         .filter { it.threadId in state.completedReviewThreadIds }
         .sortedByDescending { it.updatedAt ?: 0L }
         .map { it.threadId }
     val pendingThreadIds = (approvalThreadIds + completedThreadIds).distinct()
-    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxSize()) {
+    LaunchedEffect(focus?.nonce, pendingThreadIds) {
+        val targetIndex = pendingThreadIds.indexOf(focus?.threadId)
+        if (targetIndex >= 0) listState.animateScrollToItem(targetIndex)
+    }
+    LaunchedEffect(focus?.nonce, state.approvals) {
+        if (focus?.kind != RemoteNotificationKind.USER_INPUT) return@LaunchedEffect
+        answering = state.approvals.firstOrNull {
+            it.threadId == focus.threadId && it.requestId == focus.requestId
+        }
+    }
+    LazyColumn(
+        state = listState,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxSize(),
+    ) {
         if (pendingThreadIds.isEmpty()) {
             item { Text("当前没有待处理事项", modifier = Modifier.padding(vertical = 24.dp)) }
         }
         items(pendingThreadIds, key = { it }) { threadId ->
             val task = state.tasks.firstOrNull { it.threadId == threadId }
             val approvals = state.approvals.filter { it.threadId == threadId }
+            val userInputRequest = approvals.firstOrNull {
+                it.method == "item/tool/requestUserInput"
+            }
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color.White),
                 shape = MaterialTheme.shapes.small,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().clickable {
+                    if (userInputRequest != null) answering = userInputRequest
+                    else onOpenTask(threadId)
+                },
             ) {
                 Column(Modifier.padding(12.dp)) {
                     Text(task?.title ?: threadId.take(12), fontWeight = FontWeight.Medium)

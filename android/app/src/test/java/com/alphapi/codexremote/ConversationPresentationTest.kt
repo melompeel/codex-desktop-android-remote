@@ -7,6 +7,43 @@ import org.junit.Test
 
 class ConversationPresentationTest {
     @Test
+    fun collapsesIntermediateWorkButKeepsUserAndFinalRichReply() {
+        val blocks = presentConversation(
+            listOf(
+                TimelineItemDto("u", "turn-1", "user", "请处理", sourceItemId = "u"),
+                TimelineItemDto("thinking", "turn-1", "assistant", "先分析", sourceItemId = "thinking", turnDurationMs = 75432),
+                TimelineItemDto("command", "turn-1", "command", "$ npm test", sourceItemId = "command", turnDurationMs = 75432),
+                TimelineItemDto("final:text:0", "turn-1", "assistant", "最终结果", sourceItemId = "final", turnDurationMs = 75432),
+                TimelineItemDto("final:image:1", "turn-1", "image", "result.png", sourceItemId = "final", turnDurationMs = 75432),
+                TimelineItemDto("final:text:2", "turn-1", "assistant", "补充说明", sourceItemId = "final", turnDurationMs = 75432),
+            ),
+        )
+
+        assertEquals(5, blocks.size)
+        assertTrue(blocks[0] is ConversationBlock.Item)
+        val process = blocks[1] as ConversationBlock.Process
+        assertEquals("用时 1分钟15秒", process.label)
+        assertEquals(listOf("thinking", "command"), process.items.map { it.id })
+        assertEquals(
+            listOf("final:text:0", "final:image:1", "final:text:2"),
+            blocks.drop(2).map { (it as ConversationBlock.Item).item.id },
+        )
+    }
+
+    @Test
+    fun usesNeutralProcessLabelWhenDesktopDoesNotProvideDuration() {
+        val blocks = presentConversation(
+            listOf(
+                TimelineItemDto("u", "turn-1", "user", "开始"),
+                TimelineItemDto("status", "turn-1", "status", "处理中"),
+                TimelineItemDto("final", "turn-1", "assistant", "完成"),
+            ),
+        )
+
+        assertEquals("处理过程", (blocks[1] as ConversationBlock.Process).label)
+    }
+
+    @Test
     fun stripsTerminalEscapeAndControlSequences() {
         val cleaned = sanitizeTerminalText("\u001B[?25l\u001B[2Jfirst\u0000\rsecond\u001BPprivate\u001B\\\n\\\\server\\share\u001B[0m")
 

@@ -1,10 +1,13 @@
 [CmdletBinding()]
-param()
+param(
+    [ValidatePattern('^[A-Za-z0-9._-]+$')]
+    [string]$OutputName = "CodexRemote-Windows-x64"
+)
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $bridgeRoot = Join-Path $projectRoot "desktop_bridge"
-$output = Join-Path $PSScriptRoot "release\CodexRemote-Windows-x64"
+$output = Join-Path $PSScriptRoot "release\$OutputName"
 $node = "C:\Program Files\node-win-x64\node.exe"
 
 if (-not (Test-Path $node)) {

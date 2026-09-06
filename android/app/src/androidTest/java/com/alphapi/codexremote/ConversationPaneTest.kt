@@ -81,13 +81,15 @@ class ConversationPaneTest {
                         revision = 4,
                         items = listOf(
                             TimelineItemDto("user-1", "turn-1", "user", "请运行测试"),
-                            TimelineItemDto("assistant-1", "turn-1", "assistant", "**正在检查**"),
+                            TimelineItemDto("assistant-1", "turn-1", "assistant", "**正在检查**", sourceItemId = "assistant-1", turnDurationMs = 65_000),
                             TimelineItemDto(
                                 "command-1",
                                 "turn-1",
                                 "command",
                                 "$ npm test\n\u001B[2J33 tests passed",
                                 "completed",
+                                sourceItemId = "command-1",
+                                turnDurationMs = 65_000,
                             ),
                             TimelineItemDto(
                                 "file-1",
@@ -95,7 +97,10 @@ class ConversationPaneTest {
                                 "file",
                                 "src/MainActivity.kt\nsrc/BridgeApi.kt",
                                 "completed",
+                                sourceItemId = "file-1",
+                                turnDurationMs = 65_000,
                             ),
+                            TimelineItemDto("assistant-final", "turn-1", "assistant", "**检查完成**", sourceItemId = "assistant-final", turnDurationMs = 65_000),
                         ),
                     ),
                     canWrite = true,
@@ -121,11 +126,16 @@ class ConversationPaneTest {
         }
 
         compose.onNodeWithText("给 Codex 发消息").assertIsDisplayed()
-        compose.onNodeWithText("运行 npm 命令").assertIsDisplayed()
+        compose.onNodeWithText("用时 1分钟5秒").assertIsDisplayed()
+        compose.onAllNodesWithText("正在检查", substring = true).assertCountEquals(0)
+        compose.onAllNodesWithText("运行 npm 命令").assertCountEquals(0)
         compose.onAllNodesWithText("$ npm test", substring = true).assertCountEquals(0)
-        compose.onNodeWithText("正在编辑文件").assertIsDisplayed()
+        compose.onAllNodesWithText("正在编辑文件").assertCountEquals(0)
         compose.onAllNodesWithText("src/MainActivity.kt", substring = true).assertCountEquals(0)
 
+        compose.onNodeWithContentDescription("展开处理过程").performClick()
+        compose.onNodeWithText("运行 npm 命令").assertIsDisplayed()
+        compose.onNodeWithText("正在编辑文件").assertIsDisplayed()
         compose.onAllNodesWithContentDescription("展开")[0].performClick()
         compose.onNodeWithText("$ npm test", substring = true).assertIsDisplayed()
         compose.onAllNodesWithContentDescription("展开")[0].performClick()
@@ -178,6 +188,48 @@ class ConversationPaneTest {
             assertEquals(true, stopped)
             assertEquals("queued-1", cancelled)
         }
+    }
+
+    @Test
+    fun placesSetupBeforeInputAndDeliveryChoiceAfterInput() {
+        compose.setContent {
+            MaterialTheme {
+                TaskConversationPane(
+                    task = TaskDto("thread-layout", "Layout", "active", 2, 0, true),
+                    detail = TaskDetailDto("thread-layout", "Layout", "active", 2),
+                    canWrite = true,
+                    draft = "补充要求",
+                    deliveryMode = DeliveryMode.STEER,
+                    queued = emptyList(),
+                    queueReady = true,
+                    attachments = emptyList(),
+                    models = listOf(ModelOptionDto("gpt-test", "GPT Test")),
+                    capabilities = RemoteCapabilitiesDto(
+                        deliveries = listOf("auto", "start", "steer", "queue"),
+                        queue = true,
+                        modelSettings = true,
+                        attachments = AttachmentCapabilitiesDto(enabled = true),
+                    ),
+                    sending = false,
+                    stopping = false,
+                    onDraftChange = {},
+                    onDeliveryChange = {},
+                    onSend = {},
+                    onStop = {},
+                    onCancelQueued = {},
+                    onOpenSettings = {},
+                    onAttachmentsSelected = {},
+                    onRemoveAttachment = {},
+                )
+            }
+        }
+
+        val setup = compose.onNodeWithTag("composerSetupControls").fetchSemanticsNode().boundsInRoot
+        val input = compose.onNodeWithTag("composerInput").fetchSemanticsNode().boundsInRoot
+        val delivery = compose.onNodeWithTag("composerDeliveryControls").fetchSemanticsNode().boundsInRoot
+        assertTrue("Setup controls should be above input", setup.bottom <= input.top)
+        assertTrue("Delivery controls should be below input", delivery.top >= input.bottom)
+        compose.onNodeWithContentDescription("发送").assertIsDisplayed()
     }
 
     @Test
