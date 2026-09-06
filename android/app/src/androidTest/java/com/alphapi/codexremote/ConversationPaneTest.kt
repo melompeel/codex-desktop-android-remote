@@ -145,8 +145,8 @@ class ConversationPaneTest {
             }
         }
 
-        compose.onNodeWithText("现在补充").assertIsDisplayed()
-        compose.onNodeWithText("排队").performClick()
+        compose.onNodeWithText("调整方向").assertIsDisplayed()
+        compose.onNodeWithText("加入队列").performClick()
         compose.onNodeWithContentDescription("停止当前任务").performClick()
         compose.onNodeWithContentDescription("取消排队消息").performClick()
 

@@ -20,6 +20,27 @@ public partial class App : System.Windows.Application
         }
 
         base.OnStartup(e);
+        var smokeDeviceList = e.Args.Contains("--smoke-device-list", StringComparer.OrdinalIgnoreCase);
+        var window = new MainWindow(smokeDeviceList);
+        if (smokeDeviceList)
+        {
+            try
+            {
+                window.RunDeviceListSmokeTest();
+                window.CloseForSmokeTest();
+                Shutdown(0);
+            }
+            catch
+            {
+                window.CloseForSmokeTest();
+                Environment.ExitCode = 1;
+                Shutdown(1);
+            }
+            return;
+        }
+
+        MainWindow = window;
+        window.Show();
     }
 
     protected override void OnExit(ExitEventArgs e)

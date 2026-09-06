@@ -30,7 +30,7 @@ public partial class MainWindow : Window
     private bool _initializing = true;
     private bool _busy;
 
-    public MainWindow()
+    public MainWindow(bool smokeMode = false)
     {
         InitializeComponent();
         _settings = _settingsStore.Load();
@@ -47,7 +47,7 @@ public partial class MainWindow : Window
         _trayIcon = CreateTrayIcon();
         _initializing = false;
 
-        Loaded += async (_, _) =>
+        if (!smokeMode) Loaded += async (_, _) =>
         {
             _pollTimer.Start();
             _countdownTimer.Start();
@@ -371,6 +371,30 @@ public partial class MainWindow : Window
         _manager.Dispose();
         _client.Dispose();
         base.OnClosed(e);
+    }
+
+    internal void RunDeviceListSmokeTest()
+    {
+        var device = new DeviceInfo(
+            "smoke-device", "Smoke Android", "android", DateTimeOffset.Now.ToUnixTimeMilliseconds());
+        var run = new System.Windows.Documents.Run { DataContext = device };
+        run.SetBinding(System.Windows.Documents.Run.TextProperty,
+            new System.Windows.Data.Binding(nameof(DeviceInfo.KindLabel)) {
+                Mode = System.Windows.Data.BindingMode.OneWay,
+            });
+        run.GetBindingExpression(System.Windows.Documents.Run.TextProperty)?.UpdateTarget();
+        if (run.Text != "Android") throw new InvalidOperationException("device-binding-smoke-failed");
+        _devices.Add(device);
+        DeviceExpander.IsEnabled = true;
+        DeviceExpander.IsExpanded = true;
+        Show();
+        Dispatcher.Invoke(System.Windows.Threading.DispatcherPriority.ApplicationIdle, () => { });
+    }
+
+    internal void CloseForSmokeTest()
+    {
+        _allowExit = true;
+        Close();
     }
 
     private static string IpcLabel(string status) => status switch

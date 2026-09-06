@@ -738,12 +738,12 @@ private fun MessageComposer(
                     FilterChip(
                         selected = deliveryMode == DeliveryMode.STEER,
                         onClick = { onDeliveryChange(DeliveryMode.STEER) },
-                        label = { Text("现在补充") },
+                        label = { Text("调整方向") },
                     )
                     FilterChip(
                         selected = deliveryMode == DeliveryMode.QUEUE,
                         onClick = { onDeliveryChange(DeliveryMode.QUEUE) },
-                        label = { Text("排队") },
+                        label = { Text("加入队列") },
                     )
                 }
             } else {
@@ -789,12 +789,11 @@ private fun MessageComposer(
                             )
                         },
                         leadingIcon = { Icon(Icons.Default.Tune, null, modifier = Modifier.size(17.dp)) },
-                        modifier = Modifier.weight(1f, fill = false).widthIn(max = 220.dp),
+                        modifier = Modifier.padding(horizontal = 4.dp).weight(1f),
                     )
                 } else {
                     Spacer(Modifier.weight(1f))
                 }
-                if (settingsEnabled) Spacer(Modifier.weight(1f))
                 if (canStop) {
                     IconButton(onClick = onStop, enabled = !stopping, modifier = Modifier.size(44.dp)) {
                         if (stopping) CircularProgressIndicator(Modifier.size(19.dp), strokeWidth = 2.dp)

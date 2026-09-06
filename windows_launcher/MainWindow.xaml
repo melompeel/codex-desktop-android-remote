@@ -75,7 +75,7 @@
                                                         <StackPanel>
                                                             <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                                                             <TextBlock Foreground="{StaticResource MutedBrush}" FontSize="11">
-                                                                <Run Text="{Binding KindLabel}"/><Run Text="  ·  "/><Run Text="{Binding AuthorizedAtLabel}"/>
+                                                                <Run Text="{Binding KindLabel, Mode=OneWay}"/><Run Text="  ·  "/><Run Text="{Binding AuthorizedAtLabel, Mode=OneWay}"/>
                                                             </TextBlock>
                                                         </StackPanel>
                                                         <Button Grid.Column="1" Tag="{Binding}" Click="RevokeDevice_Click" Width="30" Height="30" MinHeight="30" Padding="0" ToolTip="删除授权设备">
