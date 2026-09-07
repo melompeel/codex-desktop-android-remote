@@ -73,12 +73,16 @@ $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
 .\gradlew.bat connectedDebugAndroidTest
 ```
 
-Windows 对中文长路径处理异常时，可以在仓库根目录临时映射盘符后构建：
+Windows 对中文长路径处理异常时，可以在仓库根目录临时映射盘符后构建。`R:` 只是当前仓库的临时别名，不会复制文件；它的容量会和 C 盘相同，并会在命令结束后移除：
 
 ```powershell
 $repo = (Get-Location).Path
 subst R: $repo
-cd R:\android
-.\gradlew.bat testDebugUnitTest assembleDebug
-subst R: /d
+try {
+    Push-Location R:\android
+    .\gradlew.bat testDebugUnitTest assembleDebug
+} finally {
+    Pop-Location
+    subst R: /d
+}
 ```

@@ -79,6 +79,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -617,6 +620,15 @@ internal fun ConnectionManagerDialog(
 ) {
     var newUrl by remember { mutableStateOf("") }
     var newName by remember { mutableStateOf("") }
+    var submittedUrl by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(state.serverAddresses, submittedUrl) {
+        val pending = submittedUrl ?: return@LaunchedEffect
+        if (state.serverAddresses.any { it.serverUrl == pending }) {
+            newName = ""
+            newUrl = ""
+            submittedUrl = null
+        }
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("连接地址") },
@@ -642,6 +654,9 @@ internal fun ConnectionManagerDialog(
                             selected = url == state.serverUrl,
                             onClick = { onSwitch(url) },
                             enabled = !state.loading,
+                            modifier = Modifier.semantics {
+                                contentDescription = "切换到 ${address.name}"
+                            },
                         )
                         Column(Modifier.weight(1f)) {
                             Text(address.name, style = MaterialTheme.typography.bodyMedium)
@@ -667,7 +682,7 @@ internal fun ConnectionManagerDialog(
                     label = { Text("地址名称") },
                     placeholder = { Text("例如：Tailscale") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().testTag("connection-name-input"),
                 )
                 OutlinedTextField(
                     value = newUrl,
@@ -675,13 +690,12 @@ internal fun ConnectionManagerDialog(
                     label = { Text("新增当前电脑的地址") },
                     placeholder = { Text("http://192.168.x.x:8766") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().testTag("connection-url-input"),
                 )
                 Button(
                     onClick = {
+                        submittedUrl = runCatching { BridgeEndpoint.normalize(newUrl) }.getOrNull()
                         onAdd(newName, newUrl)
-                        newName = ""
-                        newUrl = ""
                     },
                     enabled = !state.loading && newUrl.isNotBlank(),
                     modifier = Modifier.fillMaxWidth(),

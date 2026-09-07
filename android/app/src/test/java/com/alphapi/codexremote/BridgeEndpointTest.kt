@@ -38,6 +38,22 @@ class BridgeEndpointTest {
     }
 
     @Test
+    fun addsHttpSchemeToAnAddressEnteredFromTheConnectionManager() {
+        assertEquals(
+            "http://192.168.2.115:8766",
+            BridgeEndpoint.normalize(" 192.168.2.115:8766 "),
+        )
+        assertEquals(
+            "http://100.104.36.62:8766",
+            BridgeEndpoint.normalize("100.104.36.62:8766"),
+        )
+        assertEquals(
+            "http://desktop.tail1234.ts.net:8766",
+            BridgeEndpoint.normalize("desktop.tail1234.ts.net:8766"),
+        )
+    }
+
+    @Test
     fun rejectsPublicHostsAndUnexpectedPaths() {
         assertThrows(IllegalArgumentException::class.java) {
             BridgeEndpoint.normalize("http://8.8.8.8:8766")

@@ -6,12 +6,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import org.junit.Rule
@@ -138,7 +140,38 @@ class WorkspaceUiTest {
 
         compose.onNodeWithText("远程连接").assertIsDisplayed()
         compose.onNodeWithText("工作室").assertIsDisplayed()
+        compose.onNodeWithContentDescription("切换到 远程连接").assertIsDisplayed()
+        compose.onNodeWithContentDescription("切换到 工作室").assertIsDisplayed()
         compose.onNodeWithText("地址名称").assertIsDisplayed()
+    }
+
+    @Test
+    fun keepsNewAddressDraftUntilItAppearsInTheSavedList() {
+        compose.setContent {
+            MaterialTheme {
+                ConnectionManagerDialog(
+                    state = RemoteState(
+                        configured = true,
+                        serverUrl = "http://100.100.1.2:8766",
+                        serverAddresses = listOf(
+                            SavedServerAddress("远程连接", "http://100.100.1.2:8766"),
+                        ),
+                    ),
+                    onDismiss = {},
+                    onSwitch = {},
+                    onAdd = { _, _ -> },
+                    onRemove = {},
+                    onClearPairing = {},
+                )
+            }
+        }
+
+        compose.onNodeWithTag("connection-name-input").performTextInput("工作室")
+        compose.onNodeWithTag("connection-url-input").performTextInput("192.168.1.8:8766")
+        compose.onNodeWithText("保存并切换").performClick()
+
+        compose.onNodeWithTag("connection-name-input").assertTextContains("工作室")
+        compose.onNodeWithTag("connection-url-input").assertTextContains("192.168.1.8:8766")
     }
 
     @Test

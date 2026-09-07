@@ -42,6 +42,10 @@ class CredentialStoreTest {
             ),
             store.serverAddresses(),
         )
+        assertEquals(
+            store.serverAddresses(),
+            CredentialStore(context).serverAddresses(),
+        )
 
         val switched = store.selectServerUrl("http://100.100.1.2:8766")
         assertEquals("远程连接", switched?.name)

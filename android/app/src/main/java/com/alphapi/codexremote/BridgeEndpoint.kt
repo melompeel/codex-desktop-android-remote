@@ -4,7 +4,9 @@ import java.net.URI
 
 object BridgeEndpoint {
     fun normalize(value: String): String {
-        val uri = runCatching { URI(value.trim()) }
+        val trimmed = value.trim()
+        val candidate = if ("://" in trimmed) trimmed else "http://$trimmed"
+        val uri = runCatching { URI(candidate) }
             .getOrElse { throw IllegalArgumentException("bridge-address-invalid") }
         require(uri.scheme == "http" || uri.scheme == "https") {
             "bridge-address-must-use-http"
@@ -18,7 +20,7 @@ object BridgeEndpoint {
         val host = uri.host ?: throw IllegalArgumentException("bridge-host-required")
         require(isTrustedBridgeHost(host)) { "bridge-host-must-be-private-lan-or-tailscale" }
         require(uri.port == -1 || uri.port in 1..65_535) { "bridge-port-invalid" }
-        return value.trim().trimEnd('/')
+        return candidate.trimEnd('/')
     }
 
     internal fun isTrustedBridgeHost(host: String): Boolean {
