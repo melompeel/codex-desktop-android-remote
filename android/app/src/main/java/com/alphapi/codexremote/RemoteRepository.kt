@@ -3,6 +3,7 @@ package com.alphapi.codexremote
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.provider.OpenableColumns
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -98,41 +99,76 @@ class RemoteRepository private constructor(context: Context) {
         }
     }
 
-    fun addServerUrl(name: String, serverUrl: String) {
+    fun pairConnection(
+        name: String,
+        serverUrl: String,
+        code: String,
+        onSaved: (() -> Unit)? = null,
+    ) {
         scope.launch {
             update { it.copy(loading = true, error = null) }
             runCatching {
                 val normalized = BridgeEndpoint.normalize(serverUrl)
-                val saved = requireNotNull(store.addServerUrl(name, normalized)) { "当前没有可复用的配对凭据" }
+                val response = BridgeApi(normalized, null).pair(code.trim(), Build.MODEL)
+                val saved = store.addConnection(
+                    StoredConnection(
+                        serverUrl = normalized,
+                        deviceId = response.deviceId,
+                        token = response.token,
+                        name = name.trim(),
+                    ),
+                )
+                if (onSaved != null) withContext(Dispatchers.Main.immediate) { onSaved() }
                 activateConnection(saved)
             }.onFailure(::recordError)
             update { it.copy(loading = false) }
         }
     }
 
-    fun switchServerUrl(serverUrl: String) {
-        if (serverUrl == mutableState.value.serverUrl) return
+    fun editConnection(
+        connectionId: String,
+        name: String,
+        serverUrl: String,
+        onSaved: (() -> Unit)? = null,
+    ) {
         scope.launch {
             update { it.copy(loading = true, error = null) }
             runCatching {
-                val saved = requireNotNull(store.selectServerUrl(serverUrl)) { "找不到已保存的连接地址" }
+                val normalized = BridgeEndpoint.normalize(serverUrl)
+                val saved = requireNotNull(store.editConnection(connectionId, name, normalized)) {
+                    "找不到已保存的终端"
+                }
+                update { it.copy(serverAddresses = store.serverAddresses()) }
+                if (onSaved != null) withContext(Dispatchers.Main.immediate) { onSaved() }
+                if (connectionId == mutableState.value.activeConnectionId) activateConnection(saved)
+            }.onFailure(::recordError)
+            update { it.copy(loading = false) }
+        }
+    }
+
+    fun switchConnection(connectionId: String) {
+        if (connectionId == mutableState.value.activeConnectionId) return
+        scope.launch {
+            update { it.copy(loading = true, error = null) }
+            runCatching {
+                val saved = requireNotNull(store.selectConnection(connectionId)) { "找不到已保存的终端" }
                 activateConnection(saved)
             }.onFailure(::recordError)
             update { it.copy(loading = false) }
         }
     }
 
-    fun removeServerUrl(serverUrl: String) {
+    fun removeConnection(connectionId: String) {
         val snapshot = mutableState.value
         if (snapshot.serverAddresses.size <= 1) {
-            update { it.copy(error = "至少需要保留一个连接地址") }
+            update { it.copy(error = "至少需要保留一个终端") }
             return
         }
         scope.launch {
             update { it.copy(loading = true, error = null) }
             runCatching {
-                val saved = requireNotNull(store.removeServerUrl(serverUrl)) { "当前没有已保存的连接" }
-                if (saved.serverUrl != snapshot.serverUrl) activateConnection(saved)
+                val saved = requireNotNull(store.removeConnection(connectionId)) { "当前没有已保存的终端" }
+                if (connectionId == snapshot.activeConnectionId) activateConnection(saved)
                 else update { it.copy(serverAddresses = store.serverAddresses()) }
             }.onFailure(::recordError)
             update { it.copy(loading = false) }
@@ -523,11 +559,12 @@ class RemoteRepository private constructor(context: Context) {
             runCatching { refreshNow() }.onFailure(::recordError)
         }
         api = BridgeApi(saved.serverUrl, saved.token)
-        mediaCacheKey = saved.deviceId
+        mediaCacheKey = "${saved.id}:${saved.deviceId}"
         update {
             it.copy(
                 configured = true,
                 serverUrl = saved.serverUrl,
+                activeConnectionId = saved.id,
                 serverAddresses = store.serverAddresses(),
                 error = null,
             )
@@ -544,6 +581,14 @@ class RemoteRepository private constructor(context: Context) {
         refreshCoordinator = null
         followedThreadId = null
         api = null
+        pendingReviewStore.clear()
+        mutableState.value = RemoteState(
+            configured = true,
+            loading = true,
+            serverUrl = saved.serverUrl,
+            activeConnectionId = saved.id,
+            serverAddresses = store.serverAddresses(),
+        )
         configure(saved)
         openStream()
         refreshNow()

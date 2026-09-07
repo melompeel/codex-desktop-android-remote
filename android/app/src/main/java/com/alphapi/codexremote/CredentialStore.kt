@@ -5,11 +5,14 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import java.net.URI
+import java.nio.charset.StandardCharsets
 import java.security.KeyStore
+import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import org.json.JSONArray
 import org.json.JSONObject
 
 data class StoredConnection(
@@ -17,104 +20,179 @@ data class StoredConnection(
     val deviceId: String,
     val token: String,
     val name: String = defaultConnectionName(serverUrl),
+    val id: String = UUID.randomUUID().toString(),
 )
 
+internal data class ConnectionCatalog(
+    val activeId: String,
+    val connections: List<StoredConnection>,
+) {
+    val active: StoredConnection?
+        get() = connections.firstOrNull { it.id == activeId }
+
+    fun add(connection: StoredConnection): ConnectionCatalog {
+        val remaining = connections.filterNot {
+            it.id == connection.id || it.serverUrl == connection.serverUrl
+        }
+        return ConnectionCatalog(connection.id, listOf(connection) + remaining)
+    }
+
+    fun select(connectionId: String): ConnectionCatalog? =
+        takeIf { connections.any { connection -> connection.id == connectionId } }
+            ?.copy(activeId = connectionId)
+
+    fun edit(connectionId: String, name: String, serverUrl: String): ConnectionCatalog? {
+        if (connections.none { it.id == connectionId }) return null
+        require(connections.none { it.id != connectionId && it.serverUrl == serverUrl }) {
+            "connection-address-already-saved"
+        }
+        val updated = connections.map { connection ->
+            if (connection.id != connectionId) connection
+            else connection.copy(
+                serverUrl = serverUrl,
+                name = name.trim().ifBlank { defaultConnectionName(serverUrl) },
+            )
+        }
+        return copy(connections = updated)
+    }
+
+    fun remove(connectionId: String): ConnectionCatalog? {
+        if (connections.size <= 1 || connections.none { it.id == connectionId }) return null
+        val remaining = connections.filterNot { it.id == connectionId }
+        val nextActiveId = if (activeId == connectionId) remaining.first().id else activeId
+        return ConnectionCatalog(nextActiveId, remaining)
+    }
+
+    fun summaries(): List<SavedServerAddress> {
+        val ordered = listOfNotNull(active) + connections.filterNot { it.id == activeId }
+        return ordered.map { connection ->
+            SavedServerAddress(connection.name, connection.serverUrl, connection.id)
+        }
+    }
+}
+
 class CredentialStore(context: Context) {
-    private val preferences = context.getSharedPreferences("bridge_connection", Context.MODE_PRIVATE)
+    private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
     private val keyAlias = "alphapi_codex_remote_token"
 
+    @Synchronized
     fun save(connection: StoredConnection) {
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, encryptionKey())
-        val encrypted = cipher.doFinal(connection.token.toByteArray(Charsets.UTF_8))
-        preferences.edit()
-            .putString("server_url", connection.serverUrl)
-            .putStringSet("server_urls", setOf(connection.serverUrl))
-            .putString(
-                "server_labels",
-                JSONObject().put(connection.serverUrl, connection.name).toString(),
-            )
-            .putString("device_id", connection.deviceId)
-            .putString("token_iv", Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
-            .putString("token_data", Base64.encodeToString(encrypted, Base64.NO_WRAP))
-            .apply()
+        val normalized = connection.normalizedName()
+        writeCatalog(ConnectionCatalog(normalized.id, listOf(normalized)))
     }
 
-    fun load(): StoredConnection? {
-        val serverUrl = preferences.getString("server_url", null) ?: return null
-        val deviceId = preferences.getString("device_id", null) ?: return null
-        val iv = preferences.getString("token_iv", null) ?: return null
-        val encrypted = preferences.getString("token_data", null) ?: return null
-        return runCatching {
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(
-                Cipher.DECRYPT_MODE,
-                encryptionKey(),
-                GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP)),
-            )
-            val token = String(
-                cipher.doFinal(Base64.decode(encrypted, Base64.NO_WRAP)),
-                Charsets.UTF_8,
-            )
-            StoredConnection(serverUrl, deviceId, token)
-        }.getOrNull()
+    @Synchronized
+    fun addConnection(connection: StoredConnection): StoredConnection {
+        val catalog = requireNotNull(readCatalog()) { "当前没有已保存的连接" }
+            .add(connection.normalizedName())
+        writeCatalog(catalog)
+        return requireNotNull(catalog.active)
     }
 
-    fun serverAddresses(): List<SavedServerAddress> {
-        val active = preferences.getString("server_url", null) ?: return emptyList()
-        val saved = preferences.getStringSet("server_urls", emptySet()).orEmpty()
-            .filter(String::isNotBlank)
-            .toSet() + active
-        val labels = readLabels()
-        return (listOf(active) + (saved - active).sorted()).map { url ->
-            SavedServerAddress(labels[url].orEmpty().ifBlank { defaultConnectionName(url) }, url)
-        }
+    @Synchronized
+    fun editConnection(connectionId: String, name: String, serverUrl: String): StoredConnection? {
+        val catalog = readCatalog()?.edit(connectionId, name, serverUrl) ?: return null
+        writeCatalog(catalog)
+        return catalog.connections.firstOrNull { it.id == connectionId }
     }
 
-    fun addServerUrl(name: String, serverUrl: String): StoredConnection? {
-        val current = load() ?: return null
-        val urls = (serverAddresses().map { it.serverUrl } + serverUrl).toSet()
-        val labels = readLabels().toMutableMap().apply {
-            put(serverUrl, name.trim().ifBlank { defaultConnectionName(serverUrl) })
-        }
-        preferences.edit()
-            .putStringSet("server_urls", urls)
-            .putString("server_labels", labels.toJson())
-            .putString("server_url", serverUrl)
-            .apply()
-        return current.copy(serverUrl = serverUrl, name = labels.getValue(serverUrl))
+    @Synchronized
+    fun selectConnection(connectionId: String): StoredConnection? {
+        val catalog = readCatalog()?.select(connectionId) ?: return null
+        writeCatalog(catalog)
+        return catalog.active
     }
 
-    fun selectServerUrl(serverUrl: String): StoredConnection? {
-        val address = serverAddresses().firstOrNull { it.serverUrl == serverUrl } ?: return null
-        val current = load() ?: return null
-        preferences.edit().putString("server_url", serverUrl).apply()
-        return current.copy(serverUrl = serverUrl, name = address.name)
+    @Synchronized
+    fun removeConnection(connectionId: String): StoredConnection? {
+        val catalog = readCatalog()?.remove(connectionId) ?: return null
+        writeCatalog(catalog)
+        return catalog.active
     }
 
-    fun removeServerUrl(serverUrl: String): StoredConnection? {
-        val current = load() ?: return null
-        val urls = serverAddresses().map { it.serverUrl }
-        if (serverUrl !in urls || urls.size <= 1) return current
-        val remaining = urls.filterNot { it == serverUrl }
-        val active = if (current.serverUrl == serverUrl) remaining.first() else current.serverUrl
-        val labels = readLabels().toMutableMap().apply { remove(serverUrl) }
-        preferences.edit()
-            .putStringSet("server_urls", remaining.toSet())
-            .putString("server_labels", labels.toJson())
-            .putString("server_url", active)
-            .apply()
-        return current.copy(
-            serverUrl = active,
-            name = labels[active].orEmpty().ifBlank { defaultConnectionName(active) },
-        )
-    }
+    @Synchronized
+    fun load(): StoredConnection? = readCatalog()?.active
+
+    @Synchronized
+    fun serverAddresses(): List<SavedServerAddress> = readCatalog()?.summaries().orEmpty()
 
     fun clear() {
         preferences.edit().clear().apply()
         runCatching {
             KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(keyAlias)
         }
+    }
+
+    private fun readCatalog(): ConnectionCatalog? {
+        readCurrentCatalog()?.let { return it }
+        val legacy = readLegacyCatalog() ?: return null
+        writeCatalog(legacy)
+        return legacy
+    }
+
+    private fun readCurrentCatalog(): ConnectionCatalog? {
+        val iv = preferences.getString(CONNECTIONS_IV, null) ?: return null
+        val encrypted = preferences.getString(CONNECTIONS_DATA, null) ?: return null
+        return runCatching {
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(
+                Cipher.DECRYPT_MODE,
+                encryptionKey(),
+                GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP)),
+            )
+            decodeCatalog(
+                String(
+                    cipher.doFinal(Base64.decode(encrypted, Base64.NO_WRAP)),
+                    StandardCharsets.UTF_8,
+                ),
+            )
+        }.getOrNull()
+    }
+
+    private fun readLegacyCatalog(): ConnectionCatalog? {
+        val activeUrl = preferences.getString(LEGACY_SERVER_URL, null) ?: return null
+        val deviceId = preferences.getString(LEGACY_DEVICE_ID, null) ?: return null
+        val iv = preferences.getString(LEGACY_TOKEN_IV, null) ?: return null
+        val encrypted = preferences.getString(LEGACY_TOKEN_DATA, null) ?: return null
+        val token = runCatching {
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(
+                Cipher.DECRYPT_MODE,
+                encryptionKey(),
+                GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP)),
+            )
+            String(
+                cipher.doFinal(Base64.decode(encrypted, Base64.NO_WRAP)),
+                StandardCharsets.UTF_8,
+            )
+        }.getOrNull() ?: return null
+        val labels = readLegacyLabels()
+        val urls = preferences.getStringSet(LEGACY_SERVER_URLS, emptySet()).orEmpty()
+            .filter(String::isNotBlank)
+            .toSet() + activeUrl
+        return buildLegacyCatalog(activeUrl, urls, labels, deviceId, token)
+    }
+
+    private fun writeCatalog(catalog: ConnectionCatalog) {
+        require(catalog.connections.isNotEmpty() && catalog.active != null) { "connection-catalog-invalid" }
+        require(catalog.connections.map { it.id }.distinct().size == catalog.connections.size) {
+            "connection-id-duplicate"
+        }
+        val cipher = Cipher.getInstance(TRANSFORMATION)
+        cipher.init(Cipher.ENCRYPT_MODE, encryptionKey())
+        val encrypted = cipher.doFinal(encodeCatalog(catalog).toByteArray(StandardCharsets.UTF_8))
+        check(
+            preferences.edit()
+                .putString(CONNECTIONS_IV, Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+                .putString(CONNECTIONS_DATA, Base64.encodeToString(encrypted, Base64.NO_WRAP))
+                .remove(LEGACY_SERVER_URL)
+                .remove(LEGACY_SERVER_URLS)
+                .remove(LEGACY_SERVER_LABELS)
+                .remove(LEGACY_DEVICE_ID)
+                .remove(LEGACY_TOKEN_IV)
+                .remove(LEGACY_TOKEN_DATA)
+                .commit(),
+        ) { "connection-storage-write-failed" }
     }
 
     private fun encryptionKey(): SecretKey {
@@ -133,18 +211,98 @@ class CredentialStore(context: Context) {
         return generator.generateKey()
     }
 
-    private fun readLabels(): Map<String, String> {
-        val raw = preferences.getString("server_labels", null) ?: return emptyMap()
+    private fun readLegacyLabels(): Map<String, String> {
+        val raw = preferences.getString(LEGACY_SERVER_LABELS, null) ?: return emptyMap()
         return runCatching {
             val json = JSONObject(raw)
             json.keys().asSequence().associateWith { key -> json.optString(key) }
         }.getOrDefault(emptyMap())
     }
+
+    companion object {
+        private const val PREFERENCES = "bridge_connection"
+        private const val TRANSFORMATION = "AES/GCM/NoPadding"
+        private const val CONNECTIONS_IV = "connections_iv_v2"
+        private const val CONNECTIONS_DATA = "connections_data_v2"
+        private const val LEGACY_SERVER_URL = "server_url"
+        private const val LEGACY_SERVER_URLS = "server_urls"
+        private const val LEGACY_SERVER_LABELS = "server_labels"
+        private const val LEGACY_DEVICE_ID = "device_id"
+        private const val LEGACY_TOKEN_IV = "token_iv"
+        private const val LEGACY_TOKEN_DATA = "token_data"
+    }
 }
 
-private fun Map<String, String>.toJson(): String = JSONObject().also { json ->
-    forEach { (url, name) -> json.put(url, name) }
+private fun StoredConnection.normalizedName(): StoredConnection = copy(
+    name = name.trim().ifBlank { defaultConnectionName(serverUrl) },
+)
+
+private fun encodeCatalog(catalog: ConnectionCatalog): String = JSONObject().apply {
+    put("activeId", catalog.activeId)
+    put(
+        "connections",
+        JSONArray().apply {
+            catalog.connections.forEach { connection ->
+                put(
+                    JSONObject().apply {
+                        put("id", connection.id)
+                        put("name", connection.name)
+                        put("serverUrl", connection.serverUrl)
+                        put("deviceId", connection.deviceId)
+                        put("token", connection.token)
+                    },
+                )
+            }
+        },
+    )
 }.toString()
+
+private fun decodeCatalog(raw: String): ConnectionCatalog {
+    val json = JSONObject(raw)
+    val array = json.getJSONArray("connections")
+    val connections = buildList {
+        for (index in 0 until array.length()) {
+            val item = array.getJSONObject(index)
+            add(
+                StoredConnection(
+                    id = item.getString("id"),
+                    name = item.getString("name"),
+                    serverUrl = item.getString("serverUrl"),
+                    deviceId = item.getString("deviceId"),
+                    token = item.getString("token"),
+                ),
+            )
+        }
+    }
+    return ConnectionCatalog(json.getString("activeId"), connections).also { catalog ->
+        require(catalog.connections.isNotEmpty() && catalog.active != null)
+        require(catalog.connections.map { it.id }.distinct().size == catalog.connections.size)
+    }
+}
+
+private fun legacyConnectionId(serverUrl: String): String = UUID.nameUUIDFromBytes(
+    "legacy:$serverUrl".toByteArray(StandardCharsets.UTF_8),
+).toString()
+
+internal fun buildLegacyCatalog(
+    activeUrl: String,
+    urls: Set<String>,
+    labels: Map<String, String>,
+    deviceId: String,
+    token: String,
+): ConnectionCatalog {
+    val orderedUrls = listOf(activeUrl) + (urls - activeUrl).sorted()
+    val connections = orderedUrls.map { url ->
+        StoredConnection(
+            id = legacyConnectionId(url),
+            serverUrl = url,
+            deviceId = deviceId,
+            token = token,
+            name = labels[url].orEmpty().ifBlank { defaultConnectionName(url) },
+        )
+    }
+    return ConnectionCatalog(connections.first().id, connections)
+}
 
 private fun defaultConnectionName(serverUrl: String): String =
     runCatching { URI(serverUrl).host }.getOrNull().orEmpty().ifBlank { serverUrl }

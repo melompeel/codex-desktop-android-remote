@@ -124,25 +124,28 @@ class WorkspaceUiTest {
                     state = RemoteState(
                         configured = true,
                         serverUrl = "http://100.100.1.2:8766",
+                        activeConnectionId = "remote",
                         serverAddresses = listOf(
-                            SavedServerAddress("远程连接", "http://100.100.1.2:8766"),
-                            SavedServerAddress("工作室", "http://192.168.1.8:8766"),
+                            SavedServerAddress("远程电脑", "http://100.100.1.2:8766", "remote"),
+                            SavedServerAddress("办公室电脑", "http://192.168.1.8:8766", "office"),
                         ),
                     ),
                     onDismiss = {},
                     onSwitch = {},
-                    onAdd = { _, _ -> },
+                    onPair = { _, _, _, _ -> },
+                    onEdit = { _, _, _, _ -> },
                     onRemove = {},
                     onClearPairing = {},
                 )
             }
         }
 
-        compose.onNodeWithText("远程连接").assertIsDisplayed()
-        compose.onNodeWithText("工作室").assertIsDisplayed()
-        compose.onNodeWithContentDescription("切换到 远程连接").assertIsDisplayed()
-        compose.onNodeWithContentDescription("切换到 工作室").assertIsDisplayed()
-        compose.onNodeWithText("地址名称").assertIsDisplayed()
+        compose.onNodeWithText("远程电脑").assertIsDisplayed()
+        compose.onNodeWithText("办公室电脑").assertIsDisplayed()
+        compose.onNodeWithContentDescription("切换到 远程电脑").assertIsDisplayed()
+        compose.onNodeWithContentDescription("切换到 办公室电脑").assertIsDisplayed()
+        compose.onNodeWithText("终端名称").assertIsDisplayed()
+        compose.onNodeWithText("六位配对码").assertIsDisplayed()
     }
 
     @Test
@@ -153,13 +156,15 @@ class WorkspaceUiTest {
                     state = RemoteState(
                         configured = true,
                         serverUrl = "http://100.100.1.2:8766",
+                        activeConnectionId = "remote",
                         serverAddresses = listOf(
-                            SavedServerAddress("远程连接", "http://100.100.1.2:8766"),
+                            SavedServerAddress("远程电脑", "http://100.100.1.2:8766", "remote"),
                         ),
                     ),
                     onDismiss = {},
                     onSwitch = {},
-                    onAdd = { _, _ -> },
+                    onPair = { _, _, _, _ -> },
+                    onEdit = { _, _, _, _ -> },
                     onRemove = {},
                     onClearPairing = {},
                 )
@@ -168,10 +173,46 @@ class WorkspaceUiTest {
 
         compose.onNodeWithTag("connection-name-input").performTextInput("工作室")
         compose.onNodeWithTag("connection-url-input").performTextInput("192.168.1.8:8766")
-        compose.onNodeWithText("保存并切换").performClick()
+        compose.onNodeWithTag("connection-code-input").performTextInput("123456")
+        compose.onNodeWithText("配对并切换").performClick()
 
         compose.onNodeWithTag("connection-name-input").assertTextContains("工作室")
         compose.onNodeWithTag("connection-url-input").assertTextContains("192.168.1.8:8766")
+        compose.onNodeWithTag("connection-code-input").assertTextContains("123456")
+    }
+
+    @Test
+    fun editsASavedTerminalWithoutRequestingAnotherPairingCode() {
+        compose.setContent {
+            MaterialTheme {
+                ConnectionManagerDialog(
+                    state = RemoteState(
+                        configured = true,
+                        serverUrl = "http://100.100.1.2:8766",
+                        activeConnectionId = "remote",
+                        serverAddresses = listOf(
+                            SavedServerAddress("远程电脑", "http://100.100.1.2:8766", "remote"),
+                        ),
+                    ),
+                    onDismiss = {},
+                    onSwitch = {},
+                    onPair = { _, _, _, _ -> },
+                    onEdit = { _, _, _, onSaved -> onSaved() },
+                    onRemove = {},
+                    onClearPairing = {},
+                )
+            }
+        }
+
+        compose.onNodeWithContentDescription("编辑终端 远程电脑").performClick()
+
+        compose.onNodeWithText("编辑已保存终端：只更新名称或 IP，继续使用原授权。")
+            .assertIsDisplayed()
+        compose.onNodeWithTag("connection-name-input").assertTextContains("远程电脑")
+        compose.onNodeWithTag("connection-url-input").assertTextContains("http://100.100.1.2:8766")
+        compose.onAllNodesWithText("六位配对码").assertCountEquals(0)
+        compose.onNodeWithText("保存地址").performClick()
+        compose.onNodeWithText("添加新终端").assertIsDisplayed()
     }
 
     @Test

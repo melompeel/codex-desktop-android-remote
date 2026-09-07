@@ -7,7 +7,11 @@ import java.io.File
 @Serializable
 data class PairResponse(val deviceId: String, val token: String)
 
-data class SavedServerAddress(val name: String, val serverUrl: String)
+data class SavedServerAddress(
+    val name: String,
+    val serverUrl: String,
+    val connectionId: String = serverUrl,
+)
 
 @Serializable
 data class TaskDto(
@@ -314,6 +318,7 @@ data class RemoteState(
     val connected: Boolean = false,
     val loading: Boolean = false,
     val serverUrl: String = "",
+    val activeConnectionId: String = "",
     val serverAddresses: List<SavedServerAddress> = emptyList(),
     val tasks: List<TaskDto> = emptyList(),
     val taskDetail: TaskDetailDto? = null,

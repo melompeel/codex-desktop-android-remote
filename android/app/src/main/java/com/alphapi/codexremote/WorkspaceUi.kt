@@ -125,7 +125,7 @@ internal fun ProjectDrawerContent(
         }
         HorizontalDivider(Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
         NavigationDrawerItem(
-            label = { Text("连接地址") },
+            label = { Text("Codex 终端") },
             selected = false,
             onClick = onManageConnections,
             icon = { Icon(Icons.Default.Link, null) },

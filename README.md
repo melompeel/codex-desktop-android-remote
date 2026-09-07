@@ -10,9 +10,9 @@
 | --- | --- | --- |
 | <img src="docs/screenshots/01-task-list.png" width="260" alt="任务列表"> | <img src="docs/screenshots/02-conversation.png" width="260" alt="连续对话与折叠详情"> | <img src="docs/screenshots/03-pending.png" width="260" alt="审批和已完成待查看"> |
 
-| 动态模型列表 | 多连接地址 |
+| 动态模型列表 | 多 Codex 终端 |
 | --- | --- |
-| <img src="docs/screenshots/04-model-selector.png" width="260" alt="动态读取 GPT-6-Astra 等模型"> | <img src="docs/screenshots/05-connections.png" width="260" alt="Tailscale 和局域网连接地址"> |
+| <img src="docs/screenshots/04-model-selector.png" width="260" alt="动态读取 GPT-6-Astra 等模型"> | <img src="docs/screenshots/05-connections.png" width="260" alt="保存并切换多台 Codex 终端"> |
 
 ### Windows 管理器
 
@@ -76,9 +76,9 @@ Android 如果提示“禁止安装未知应用”，请临时允许当前文件
 5. 输入 Bridge 窗口显示的六位配对码，然后点击“连接”。
 6. 允许通知权限，以便在后台收到审批提醒。
 
-六位配对码是临时随机码，有效期为 10 分钟，并不是固定密码。配对成功后手机会保存自己的加密令牌，日常使用不需要重复输入配对码。
+六位配对码是临时随机码，有效期为 10 分钟，并不是固定密码。配对成功后手机会为这台终端保存独立的加密令牌，日常切换已保存终端不需要重复输入配对码。
 
-同一台电脑可以同时保存多个访问地址。首次配对时可自己填写连接名称；之后在左侧菜单打开“连接地址”，为 Tailscale 地址和局域网地址分别填写任意名称与 URL。这些地址共用当前电脑的配对令牌，之后点选即可切换，不需要再次输入六位码。
+一部手机可以保存多台 Codex Desktop 终端。新增另一台电脑时，需要输入那台电脑当前显示的六位配对码；之后点选已保存终端即可直接切换。若只是同一台电脑的 IP、Tailscale 地址或名称变化，点击该终端右侧的编辑按钮即可沿用原授权，不需要新验证码。
 
 ## 五、日常使用
 
@@ -91,7 +91,7 @@ Android 如果提示“禁止安装未知应用”，请临时允许当前文件
 
 - 查看项目和任务列表
 - 在“待处理”中查看权限审批和已完成待查看的任务
-- 保存并切换同一台电脑的多个 Tailscale/局域网地址
+- 保存并切换多台 Codex Desktop 终端；编辑已保存终端的 IP 时沿用原授权
 - 查看 Codex 实时回复、Markdown 表格和电脑端生成的图片；宽表格可横向滑动
 - 每轮默认只显示用户输入和最终回复，中间分析、命令与文件活动合并为可展开的“用时”行
 - 下载并打开回复中明确引用的电脑文件

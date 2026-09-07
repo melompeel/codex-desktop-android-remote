@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Difference
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
@@ -428,9 +429,14 @@ private fun RemoteHome(
         ConnectionManagerDialog(
             state = state,
             onDismiss = { showConnections = false },
-            onSwitch = repository::switchServerUrl,
-            onAdd = repository::addServerUrl,
-            onRemove = repository::removeServerUrl,
+            onSwitch = repository::switchConnection,
+            onPair = { name, url, code, onSaved ->
+                repository.pairConnection(name, url, code, onSaved)
+            },
+            onEdit = { connectionId, name, url, onSaved ->
+                repository.editConnection(connectionId, name, url, onSaved)
+            },
+            onRemove = repository::removeConnection,
             onClearPairing = {
                 showConnections = false
                 confirmDisconnect = true
@@ -462,7 +468,7 @@ private fun RemoteHome(
         AlertDialog(
             onDismissRequest = { confirmDisconnect = false },
             title = { Text("断开并清除配对？") },
-            text = { Text("本机保存的连接令牌会被删除，需要新配对码才能再次连接。") },
+            text = { Text("本机保存的全部终端令牌都会被删除，需要各台电脑的新配对码才能再次连接。") },
             confirmButton = {
                 Button(onClick = {
                     confirmDisconnect = false
@@ -614,45 +620,46 @@ internal fun ConnectionManagerDialog(
     state: RemoteState,
     onDismiss: () -> Unit,
     onSwitch: (String) -> Unit,
-    onAdd: (String, String) -> Unit,
+    onPair: (String, String, String, () -> Unit) -> Unit,
+    onEdit: (String, String, String, () -> Unit) -> Unit,
     onRemove: (String) -> Unit,
     onClearPairing: () -> Unit,
 ) {
     var newUrl by remember { mutableStateOf("") }
     var newName by remember { mutableStateOf("") }
-    var submittedUrl by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(state.serverAddresses, submittedUrl) {
-        val pending = submittedUrl ?: return@LaunchedEffect
-        if (state.serverAddresses.any { it.serverUrl == pending }) {
-            newName = ""
-            newUrl = ""
-            submittedUrl = null
-        }
+    var pairingCode by remember { mutableStateOf("") }
+    var editingConnectionId by remember { mutableStateOf<String?>(null) }
+    val clearForm = {
+        newName = ""
+        newUrl = ""
+        pairingCode = ""
+        editingConnectionId = null
     }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("连接地址") },
+        title = { Text("Codex 终端") },
         text = {
             Column(
                 Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Text(
-                    "同一台电脑可保存 Tailscale 和局域网地址，切换时不需要重新配对。",
+                    "新增另一台电脑需要输入它当前的六位配对码；切换已保存终端不需要重新配对。",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 state.serverAddresses.forEach { address ->
                     val url = address.serverUrl
+                    val connectionId = address.connectionId
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .clickable(enabled = !state.loading) { onSwitch(url) }
+                            .clickable(enabled = !state.loading) { onSwitch(connectionId) }
                             .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         RadioButton(
-                            selected = url == state.serverUrl,
-                            onClick = { onSwitch(url) },
+                            selected = connectionId == state.activeConnectionId,
+                            onClick = { onSwitch(connectionId) },
                             enabled = !state.loading,
                             modifier = Modifier.semantics {
                                 contentDescription = "切换到 ${address.name}"
@@ -661,45 +668,87 @@ internal fun ConnectionManagerDialog(
                         Column(Modifier.weight(1f)) {
                             Text(address.name, style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                url,
+                                url.removePrefix("http://").removePrefix("https://"),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                             )
+                        }
+                        IconButton(
+                            onClick = {
+                                editingConnectionId = connectionId
+                                newName = address.name
+                                newUrl = address.serverUrl
+                                pairingCode = ""
+                            },
+                            enabled = !state.loading,
+                        ) {
+                            Icon(Icons.Default.Edit, "编辑终端 ${address.name}")
                         }
                         if (state.serverAddresses.size > 1) {
                             IconButton(
-                                onClick = { onRemove(url) },
+                                onClick = { onRemove(connectionId) },
                                 enabled = !state.loading,
                             ) {
-                                Icon(Icons.Default.Delete, "删除地址 $url")
+                                Icon(Icons.Default.Delete, "删除终端 ${address.name}")
                             }
                         }
                     }
                 }
+                Text(
+                    if (editingConnectionId == null) {
+                        "添加新终端"
+                    } else {
+                        "编辑已保存终端：只更新名称或 IP，继续使用原授权。"
+                    },
+                    style = MaterialTheme.typography.titleSmall,
+                )
                 OutlinedTextField(
                     value = newName,
                     onValueChange = { newName = it },
-                    label = { Text("地址名称") },
-                    placeholder = { Text("例如：Tailscale") },
+                    label = { Text("终端名称") },
+                    placeholder = { Text("例如：办公室电脑") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().testTag("connection-name-input"),
                 )
                 OutlinedTextField(
                     value = newUrl,
                     onValueChange = { newUrl = it },
-                    label = { Text("新增当前电脑的地址") },
+                    label = { Text(if (editingConnectionId == null) "新终端地址" else "终端地址") },
                     placeholder = { Text("http://192.168.x.x:8766") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().testTag("connection-url-input"),
                 )
+                if (editingConnectionId == null) {
+                    OutlinedTextField(
+                        value = pairingCode,
+                        onValueChange = { pairingCode = it.filter(Char::isDigit).take(6) },
+                        label = { Text("六位配对码") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("connection-code-input"),
+                    )
+                }
                 Button(
                     onClick = {
-                        submittedUrl = runCatching { BridgeEndpoint.normalize(newUrl) }.getOrNull()
-                        onAdd(newName, newUrl)
+                        val editingId = editingConnectionId
+                        if (editingId == null) {
+                            onPair(newName, newUrl, pairingCode, clearForm)
+                        } else {
+                            onEdit(editingId, newName, newUrl, clearForm)
+                        }
                     },
-                    enabled = !state.loading && newUrl.isNotBlank(),
+                    enabled = !state.loading && newUrl.isNotBlank() &&
+                        (editingConnectionId != null || pairingCode.length == 6),
                     modifier = Modifier.fillMaxWidth(),
-                ) { Text("保存并切换") }
+                ) {
+                    Text(if (editingConnectionId == null) "配对并切换" else "保存地址")
+                }
+                if (editingConnectionId != null) {
+                    TextButton(onClick = clearForm, modifier = Modifier.fillMaxWidth()) {
+                        Text("取消编辑")
+                    }
+                }
                 state.error?.let {
                     Text(it, color = MaterialTheme.colorScheme.error)
                 }
@@ -707,7 +756,7 @@ internal fun ConnectionManagerDialog(
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } },
         dismissButton = {
-            TextButton(onClick = onClearPairing) { Text("清除全部配对") }
+            TextButton(onClick = onClearPairing) { Text("清除全部终端") }
         },
     )
 }
