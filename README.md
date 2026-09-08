@@ -43,7 +43,7 @@ CodexRemoteManager.exe
 
 管理器会自动启动 Bridge，并直接显示：
 
-- Bridge、桌面 IPC 和 Codex Desktop 版本状态
+- Windows 客户端版本/构建提交、Bridge、桌面 IPC 和 Codex Desktop 版本状态
 - 六位临时配对码与剩余有效时间
 - 监听 IP、端口、Tailscale 地址和局域网地址
 - 启动、停止、重启和打开 Codex Desktop

@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
+using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -16,6 +17,7 @@ namespace CodexRemoteManager;
 
 public partial class MainWindow : Window
 {
+    private static readonly string VersionLabel = BuildVersionLabel();
     private readonly LauncherSettingsStore _settingsStore = new();
     private readonly LocalBridgeClient _client = new();
     private readonly BridgeManager _manager;
@@ -36,6 +38,8 @@ public partial class MainWindow : Window
     public MainWindow(bool smokeMode = false)
     {
         InitializeComponent();
+        ManagerVersionText.Text = VersionLabel;
+        Title = $"Codex Remote 管理器 {VersionLabel}";
         _settings = _settingsStore.Load();
         _restartWhenMissing = _settings.StartBridgeOnLaunch;
         PortTextBox.Text = _settings.Port.ToString();
@@ -46,6 +50,7 @@ public partial class MainWindow : Window
 
         _manager = new BridgeManager(_client);
         _manager.LogReceived += AppendLog;
+        AppendLog($"Windows 管理器 {VersionLabel}");
         _pollTimer.Tick += async (_, _) => await RefreshAndRecoverAsync();
         _countdownTimer.Tick += (_, _) => UpdateCountdown();
         _trayIcon = CreateTrayIcon();
@@ -425,6 +430,8 @@ public partial class MainWindow : Window
 
     internal void RunDeviceListSmokeTest()
     {
+        if (!ManagerVersionText.Text.StartsWith("v", StringComparison.Ordinal))
+            throw new InvalidOperationException("manager-version-label-missing");
         var device = new DeviceInfo(
             "smoke-device", "Smoke Android", "android", DateTimeOffset.Now.ToUnixTimeMilliseconds());
         var run = new System.Windows.Documents.Run { DataContext = device };
@@ -454,4 +461,17 @@ public partial class MainWindow : Window
         "disconnected" => "未连接",
         _ => status,
     };
+
+    private static string BuildVersionLabel()
+    {
+        var assembly = typeof(MainWindow).Assembly;
+        var informational = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion;
+        var fallback = assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+        var value = string.IsNullOrWhiteSpace(informational) ? fallback : informational;
+        var parts = value.Split('+', 2, StringSplitOptions.TrimEntries);
+        if (parts.Length < 2 || string.IsNullOrWhiteSpace(parts[1])) return $"v{parts[0]}";
+        var revision = parts[1].Length > 7 ? parts[1][..7] : parts[1];
+        return $"v{parts[0]} · {revision}";
+    }
 }

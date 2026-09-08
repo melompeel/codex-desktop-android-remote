@@ -11,6 +11,7 @@
 ## Windows
 
 - 若 `dotnet build` 报错无法访问 `%LOCALAPPDATA%\Microsoft SDKs`，通常同样是受限执行环境权限问题。获得 SDK 读取权限后重跑，先确认它不是 C# 编译错误。
+- 若管理器正从 `windows_launcher\bin` 运行，`dotnet build` 会因 `CodexRemoteManager.exe` 被锁定而失败。可先退出管理器，或使用独立 `-o` 目录验证；不要把文件锁定误判为 C# 编译失败。
 - 正式 Windows 包使用 `windows_launcher\publish-windows.ps1` 生成；该脚本同时编译并打包最新 `desktop_bridge`，不要只复制旧的 `dist`。
 
 ## 产物与 Git
