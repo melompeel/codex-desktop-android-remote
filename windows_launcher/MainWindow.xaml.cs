@@ -32,6 +32,7 @@ public partial class MainWindow : Window
     private bool _allowExit;
     private bool _initializing = true;
     private bool _busy;
+    private bool _statusCheckInProgress;
     private bool _restartWhenMissing;
     private int _missingHealthChecks;
     private DateTimeOffset _nextAutomaticRestartAt = DateTimeOffset.MinValue;
@@ -82,50 +83,66 @@ public partial class MainWindow : Window
 
     private async Task RefreshStatusAsync()
     {
-        if (_busy) return;
-        int port;
-        try { port = CurrentPort; }
-        catch { return; }
-        var status = await _client.GetStatusAsync(port);
-        ApplyStatus(status);
+        if (_busy || _statusCheckInProgress) return;
+        _statusCheckInProgress = true;
+        try
+        {
+            int port;
+            try { port = CurrentPort; }
+            catch { return; }
+            var status = await _client.GetStatusAsync(port);
+            ApplyStatus(status);
+        }
+        finally
+        {
+            _statusCheckInProgress = false;
+        }
     }
 
     private async Task RefreshAndRecoverAsync()
     {
-        if (_busy) return;
-        int port;
-        try { port = CurrentPort; }
-        catch { return; }
-        var status = await _client.GetStatusAsync(port);
-        ApplyStatus(status);
-        if (status is not null)
-        {
-            _missingHealthChecks = 0;
-            _nextAutomaticRestartAt = DateTimeOffset.MinValue;
-            return;
-        }
-        if (!_restartWhenMissing || DateTimeOffset.UtcNow < _nextAutomaticRestartAt) return;
-        _missingHealthChecks += 1;
-        if (_missingHealthChecks < 2) return;
-
-        _missingHealthChecks = 0;
+        if (_busy || _statusCheckInProgress) return;
+        _statusCheckInProgress = true;
         try
         {
-            SetBusy(true);
-            AppendLog("Bridge 连续两次未响应，正在自动恢复...");
-            var recovered = await _manager.StartAsync(port);
-            ApplyStatus(recovered);
-            AppendLog("Bridge 已自动恢复，手机授权保持不变。");
-        }
-        catch (Exception error)
-        {
-            _nextAutomaticRestartAt = DateTimeOffset.UtcNow.AddSeconds(15);
-            AppendLog($"Bridge 自动恢复失败，15 秒后重试：{error.Message}");
-            ApplyStatus(null);
+            int port;
+            try { port = CurrentPort; }
+            catch { return; }
+            var status = await _client.GetStatusAsync(port);
+            ApplyStatus(status);
+            if (status is not null)
+            {
+                _missingHealthChecks = 0;
+                _nextAutomaticRestartAt = DateTimeOffset.MinValue;
+                return;
+            }
+            if (!_restartWhenMissing || DateTimeOffset.UtcNow < _nextAutomaticRestartAt) return;
+            _missingHealthChecks += 1;
+            if (_missingHealthChecks < 3) return;
+
+            _missingHealthChecks = 0;
+            try
+            {
+                SetBusy(true);
+                AppendLog("Bridge 连续三次未响应，正在自动恢复...");
+                var recovered = await _manager.StartAsync(port);
+                ApplyStatus(recovered);
+                AppendLog("Bridge 已自动恢复，手机授权保持不变。");
+            }
+            catch (Exception error)
+            {
+                _nextAutomaticRestartAt = DateTimeOffset.UtcNow.AddSeconds(15);
+                AppendLog($"Bridge 自动恢复失败，15 秒后重试：{error.Message}");
+                ApplyStatus(null);
+            }
+            finally
+            {
+                SetBusy(false);
+            }
         }
         finally
         {
-            SetBusy(false);
+            _statusCheckInProgress = false;
         }
     }
 

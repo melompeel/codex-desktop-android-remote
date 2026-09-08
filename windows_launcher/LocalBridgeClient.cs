@@ -7,7 +7,7 @@ namespace CodexRemoteManager;
 
 public sealed class LocalBridgeClient : IDisposable
 {
-    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(2) };
+    private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(8) };
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public async Task<LocalBridgeStatus?> GetStatusAsync(int port, CancellationToken cancellationToken = default)
