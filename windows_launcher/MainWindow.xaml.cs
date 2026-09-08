@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -267,17 +268,38 @@ public partial class MainWindow : Window
     private void CopyPairing_Click(object sender, RoutedEventArgs e)
     {
         if (_status is null) return;
-        Clipboard.SetText(_status.Pairing.Code);
-        FooterText.Text = "配对码已复制";
+        if (TryCopyToClipboard(_status.Pairing.Code)) FooterText.Text = "配对码已复制";
     }
 
     private void CopyAddress_Click(object sender, RoutedEventArgs e)
     {
         if (sender is Button { Tag: string url })
         {
-            Clipboard.SetText(url);
-            FooterText.Text = $"已复制 {url}";
+            if (TryCopyToClipboard(url)) FooterText.Text = $"已复制 {url}";
         }
+    }
+
+    private bool TryCopyToClipboard(string text)
+    {
+        for (var attempt = 0; attempt < 5; attempt += 1)
+        {
+            try
+            {
+                Clipboard.SetText(text);
+                return true;
+            }
+            catch (COMException) when (attempt < 4)
+            {
+                Thread.Sleep(20 * (attempt + 1));
+            }
+            catch (COMException)
+            {
+                break;
+            }
+        }
+        FooterText.Text = "剪贴板正被其他程序占用，请稍后重试";
+        AppendLog("复制失败：Windows 剪贴板正被其他程序占用。");
+        return false;
     }
 
     private async void RevokeDevice_Click(object sender, RoutedEventArgs e)

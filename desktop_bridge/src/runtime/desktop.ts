@@ -5,6 +5,15 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+type DesktopExecutableLookupOptions = {
+  platform?: NodeJS.Platform;
+  execute?: (
+    executable: string,
+    args: string[],
+    options: { windowsHide: boolean; timeout: number },
+  ) => Promise<{ stdout: string }>;
+};
+
 export async function detectDesktopPackageVersion(): Promise<string | null> {
   if (process.env.CODEX_DESKTOP_VERSION) return process.env.CODEX_DESKTOP_VERSION;
   if (process.platform !== "win32") return null;
@@ -25,11 +34,17 @@ export async function detectDesktopPackageVersion(): Promise<string | null> {
   }
 }
 
-export async function findCodexDesktopAppExecutable(): Promise<string | null> {
+export async function findCodexDesktopAppExecutable(
+  options: DesktopExecutableLookupOptions = {},
+): Promise<string | null> {
   if (process.env.CODEX_DESKTOP_PATH) return process.env.CODEX_DESKTOP_PATH;
-  if (process.platform !== "win32") return null;
+  if ((options.platform ?? process.platform) !== "win32") return null;
   try {
-    const { stdout } = await execFileAsync(
+    const execute = options.execute ?? (async (executable, args, executeOptions) => {
+      const { stdout } = await execFileAsync(executable, args, executeOptions);
+      return { stdout };
+    });
+    const { stdout } = await execute(
       "powershell.exe",
       [
         "-NoProfile",
@@ -37,8 +52,12 @@ export async function findCodexDesktopAppExecutable(): Promise<string | null> {
         "-Command",
         "$package = Get-AppxPackage -Name OpenAI.Codex | " +
           "Sort-Object Version -Descending | Select-Object -First 1; " +
-          "if ($package) { $executable = Join-Path $package.InstallLocation 'app\\Codex.exe'; " +
-          "if (Test-Path -LiteralPath $executable) { $executable } }",
+          "if ($package) { $manifest = Get-AppxPackageManifest -Package $package; " +
+          "$application = @($manifest.Package.Applications.Application) | " +
+          "Where-Object { $_.Executable } | Select-Object -First 1; " +
+          "if ($application) { $executable = Join-Path $package.InstallLocation " +
+          "([string]$application.Executable); " +
+          "if (Test-Path -LiteralPath $executable) { $executable } } }",
       ],
       { windowsHide: true, timeout: 5_000 },
     );

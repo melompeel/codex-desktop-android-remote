@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 describe.skipIf(process.platform !== "win32")("Windows launcher recovery", () => {
@@ -23,5 +25,22 @@ describe.skipIf(process.platform !== "win32")("Windows launcher recovery", () =>
 
   it("recovers the hung Bridge through the double-click launcher", () => {
     expect(run("hung", true)).toEqual({ stopped: true, started: true, failure: null });
+  });
+
+  it("does not let Bridge exit races or a busy clipboard terminate the tray manager", () => {
+    const bridgeManager = readFileSync(
+      fileURLToPath(new URL("../../windows_launcher/BridgeManager.cs", import.meta.url)),
+      "utf8",
+    );
+    const mainWindow = readFileSync(
+      fileURLToPath(new URL("../../windows_launcher/MainWindow.xaml.cs", import.meta.url)),
+      "utf8",
+    );
+
+    expect(bridgeManager).toContain("process.Exited +=");
+    expect(bridgeManager).not.toContain("_ownedProcess?.ExitCode");
+    expect(bridgeManager).toContain("catch (InvalidOperationException)");
+    expect(bridgeManager).toContain("catch (ObjectDisposedException)");
+    expect(mainWindow).toContain("TryCopyToClipboard");
   });
 });

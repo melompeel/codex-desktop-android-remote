@@ -22,6 +22,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performTextInput
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -94,7 +95,7 @@ class ConversationPaneTest {
     }
 
     @Test
-    fun letsTheUserLoadOlderConversationHistory() {
+    fun loadsOlderConversationHistoryWhenTheUserScrollsToTheTop() {
         var requested = false
         compose.setContent {
             MaterialTheme {
@@ -105,7 +106,14 @@ class ConversationPaneTest {
                         title = "History",
                         status = "idle",
                         revision = 1,
-                        items = listOf(TimelineItemDto("latest", "turn", "assistant", "最近回复")),
+                        items = (1..80).map { index ->
+                            TimelineItemDto(
+                                id = "item-$index",
+                                turnId = "turn-$index",
+                                kind = "assistant",
+                                text = "回复 $index",
+                            )
+                        },
                         hasMoreHistory = true,
                         historyCursor = "older-cursor",
                     ),
@@ -132,8 +140,10 @@ class ConversationPaneTest {
             }
         }
 
-        compose.onNodeWithText("加载更早记录").performClick()
-        compose.runOnIdle { assertTrue(requested) }
+        compose.waitForIdle()
+        compose.onAllNodesWithTag("loadOlderHistory").assertCountEquals(0)
+        compose.onNodeWithTag("conversationTimeline").performScrollToIndex(0)
+        compose.waitUntil(timeoutMillis = 3_000) { requested }
     }
 
     @Test

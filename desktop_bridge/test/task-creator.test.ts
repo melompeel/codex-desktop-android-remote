@@ -10,7 +10,7 @@ describe("AppServerTaskCreator", () => {
   it("activates a thread through the currently installed Desktop executable", async () => {
     const execute = vi.fn(async () => undefined);
     const currentDesktop =
-      "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.901.6511.0_x64__publisher\\app\\Codex.exe";
+      "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.901.6511.0_x64__publisher\\app\\ChatGPT.exe";
 
     await activateCodexThread(`codex://threads/${THREAD_ID}`, {
       platform: "win32",

@@ -354,25 +354,16 @@ private fun ConversationTimeline(
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().testTag("conversationTimeline"),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 16.dp),
         ) {
-            if (detail.hasMoreHistory) {
+            if (detail.hasMoreHistory && loadingOlderHistory) {
                 item("older-history") {
-                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        TextButton(
-                            onClick = onLoadOlderHistory,
-                            enabled = !loadingOlderHistory,
-                            modifier = Modifier.testTag("loadOlderHistory"),
-                        ) {
-                            if (loadingOlderHistory) {
-                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                                Spacer(Modifier.width(8.dp))
-                                Text("正在加载更早记录")
-                            } else {
-                                Text("加载更早记录")
-                            }
-                        }
+                    Box(
+                        Modifier.fillMaxWidth().height(36.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                     }
                 }
             }

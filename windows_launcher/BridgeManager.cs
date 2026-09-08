@@ -46,21 +46,22 @@ public sealed class BridgeManager : IDisposable
         info.Environment["BRIDGE_DATA_DIR"] = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "OneSCodexRemote");
 
-        _ownedProcess = new Process { StartInfo = info, EnableRaisingEvents = true };
-        _ownedProcess.OutputDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) Log(e.Data); };
-        _ownedProcess.ErrorDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) Log(e.Data); };
-        _ownedProcess.Exited += (_, _) => Log($"Bridge 已退出（代码 {_ownedProcess?.ExitCode}）。");
-        if (!_ownedProcess.Start()) throw new InvalidOperationException("无法启动 Bridge 进程。");
-        _ownedProcess.BeginOutputReadLine();
-        _ownedProcess.BeginErrorReadLine();
+        var process = new Process { StartInfo = info, EnableRaisingEvents = true };
+        process.OutputDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) Log(e.Data); };
+        process.ErrorDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) Log(e.Data); };
+        process.Exited += (_, _) => HandleBridgeExited(process);
+        _ownedProcess = process;
+        if (!process.Start()) throw new InvalidOperationException("无法启动 Bridge 进程。");
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
         Log($"正在启动 Bridge，监听 0.0.0.0:{port} ...");
 
         var deadline = DateTimeOffset.UtcNow.AddSeconds(20);
         while (DateTimeOffset.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (_ownedProcess.HasExited)
-                throw new InvalidOperationException($"Bridge 启动失败，退出代码 {_ownedProcess.ExitCode}。");
+            if (process.HasExited)
+                throw new InvalidOperationException($"Bridge 启动失败，退出代码 {process.ExitCode}。");
             var status = await _client.GetStatusAsync(port, cancellationToken);
             if (status is not null) return status;
             await Task.Delay(350, cancellationToken);
@@ -193,7 +194,41 @@ public sealed class BridgeManager : IDisposable
     private static bool IsPortListening(int port) =>
         IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(endpoint => endpoint.Port == port);
 
+    private void HandleBridgeExited(Process process)
+    {
+        try
+        {
+            string message;
+            try
+            {
+                process.WaitForExit();
+                message = $"Bridge 已退出（代码 {process.ExitCode}）。";
+            }
+            catch (ObjectDisposedException)
+            {
+                message = "Bridge 已退出。";
+            }
+            catch (InvalidOperationException)
+            {
+                message = "Bridge 已退出（无法读取退出代码）。";
+            }
+            Log(message);
+        }
+        catch
+        {
+            // Process exit notifications must never terminate the tray manager.
+        }
+    }
+
     private void Log(string message) => LogReceived?.Invoke($"{DateTime.Now:HH:mm:ss}  {message}");
 
-    public void Dispose() => _ownedProcess?.Dispose();
+    public void Dispose()
+    {
+        var process = Interlocked.Exchange(ref _ownedProcess, null);
+        if (process is null) return;
+        try { process.EnableRaisingEvents = false; }
+        catch (ObjectDisposedException) { }
+        catch (InvalidOperationException) { }
+        process.Dispose();
+    }
 }
