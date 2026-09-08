@@ -1,11 +1,57 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  activateCodexThread,
   AppServerTaskCreator,
   type AppServerSession,
 } from "../src/catalog/task-creator.js";
 
 describe("AppServerTaskCreator", () => {
+  it("activates a thread through the currently installed Desktop executable", async () => {
+    const execute = vi.fn(async () => undefined);
+    const currentDesktop =
+      "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.901.6511.0_x64__publisher\\app\\Codex.exe";
+
+    await activateCodexThread(`codex://threads/${THREAD_ID}`, {
+      platform: "win32",
+      resolveDesktopExecutable: async () => currentDesktop,
+      execute,
+    });
+
+    expect(execute).toHaveBeenCalledWith(currentDesktop, [`codex://threads/${THREAD_ID}`]);
+    expect(execute).not.toHaveBeenCalledWith("explorer.exe", expect.anything());
+  });
+
+  it("falls back to the registered URI handler when Desktop lookup is unavailable", async () => {
+    const execute = vi.fn(async () => undefined);
+
+    await activateCodexThread(`codex://threads/${THREAD_ID}`, {
+      platform: "win32",
+      resolveDesktopExecutable: async () => null,
+      execute,
+    });
+
+    expect(execute).toHaveBeenCalledWith("explorer.exe", [`codex://threads/${THREAD_ID}`]);
+  });
+
+  it("falls back to the registered URI handler when the current Desktop cannot launch", async () => {
+    const currentDesktop = "C:\\CurrentCodex\\app\\Codex.exe";
+    const execute = vi.fn(async (executable: string) => {
+      if (executable === currentDesktop) throw new Error("desktop-launch-failed");
+    });
+
+    await activateCodexThread(`codex://threads/${THREAD_ID}`, {
+      platform: "win32",
+      resolveDesktopExecutable: async () => currentDesktop,
+      execute,
+    });
+
+    expect(execute.mock.calls).toEqual([
+      [currentDesktop, [`codex://threads/${THREAD_ID}`]],
+      ["explorer.exe", [`codex://threads/${THREAD_ID}`]],
+    ]);
+  });
+
   it("materializes, rolls back, unsubscribes, and activates a workspace task", async () => {
     const session = new FakeSession();
     const activate = vi.fn(async () => undefined);

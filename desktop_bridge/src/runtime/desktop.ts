@@ -25,6 +25,29 @@ export async function detectDesktopPackageVersion(): Promise<string | null> {
   }
 }
 
+export async function findCodexDesktopAppExecutable(): Promise<string | null> {
+  if (process.env.CODEX_DESKTOP_PATH) return process.env.CODEX_DESKTOP_PATH;
+  if (process.platform !== "win32") return null;
+  try {
+    const { stdout } = await execFileAsync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "$package = Get-AppxPackage -Name OpenAI.Codex | " +
+          "Sort-Object Version -Descending | Select-Object -First 1; " +
+          "if ($package) { $executable = Join-Path $package.InstallLocation 'app\\Codex.exe'; " +
+          "if (Test-Path -LiteralPath $executable) { $executable } }",
+      ],
+      { windowsHide: true, timeout: 5_000 },
+    );
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function findCodexExecutable(): Promise<string> {
   return (await findCodexRuntime()).executable;
 }

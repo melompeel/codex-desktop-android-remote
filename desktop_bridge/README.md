@@ -91,7 +91,7 @@ npm run check
 npm run build
 ```
 
-常驻 `app-server` 只用于读取任务目录和历史；所有实际用户任务写操作都必须先通过 `thread-owner-discovery` 找到当前 Codex Desktop owner。手机主动打开历史任务时，Bridge 只允许为目录中已存在的 thread ID 生成 `codex://threads/:id` 深链，并等待 Desktop owner；不接受任意 URL。创建任务时，一次性 helper 只生成并回滚引导轮次，确认留下零轮次任务后立即退出；用户提示词只会在 Desktop 接管后通过 IPC 发送。
+常驻 `app-server` 只用于读取任务目录和历史；所有实际用户任务写操作都必须先通过 `thread-owner-discovery` 找到当前 Codex Desktop owner。手机主动打开历史任务时，Bridge 只允许为目录中已存在的 thread ID 生成 `codex://threads/:id` 深链，并等待 Desktop owner；不接受任意 URL。Bridge 每次激活时都通过 `Get-AppxPackage` 动态定位当前 Codex Desktop 的 `InstallLocation`，不写死桌面版本号；定位或直接启动失败时才回退到 Windows 的 `codex://` 协议处理器。创建任务时，一次性 helper 只生成并回滚引导轮次，确认留下零轮次任务后立即退出；用户提示词只会在 Desktop 接管后通过 IPC 发送。
 
 已知协议版本记录在 `src/ipc/adapter.ts`。桌面包或内嵌 CLI 升级后，Bridge 会继续尝试已知协议；版本不同只产生诊断告警，不会整体切成只读。未知版本的 stream 若仍符合已知结构会继续同步，具体操作若被新版协议拒绝则只向客户端返回该操作错误。升级后仍应尽快重新验证并更新版本常量。
 

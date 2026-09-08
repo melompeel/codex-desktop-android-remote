@@ -1,8 +1,7 @@
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { promisify } from "node:util";
 
-const execFileAsync = promisify(execFile);
+import { findCodexDesktopAppExecutable } from "../runtime/desktop.js";
 const BOOTSTRAP_PROMPT =
   "Create an empty durable task for Desktop handoff. Reply with READY only. " +
   "Do not call tools, inspect files, or modify the workspace.";
@@ -33,6 +32,11 @@ export interface AppServerSession {
 
 export type AppServerSessionFactory = () => Promise<AppServerSession>;
 export type ThreadActivator = (url: string) => Promise<void>;
+export type DesktopActivationOptions = {
+  platform?: NodeJS.Platform;
+  resolveDesktopExecutable?: () => Promise<string | null>;
+  execute?: (executable: string, args: string[]) => Promise<void>;
+};
 
 export class AppServerTaskCreator {
   private creating = false;
@@ -149,9 +153,39 @@ export function codexThreadUrl(threadId: string): string {
   return `codex://threads/${encodeURIComponent(threadId)}?follow=${randomUUID()}`;
 }
 
-export async function activateCodexThread(url: string): Promise<void> {
-  if (process.platform !== "win32") throw new Error("desktop-activation-unsupported");
-  await execFileAsync("explorer.exe", [url], { windowsHide: true, timeout: 10_000 });
+export async function activateCodexThread(
+  url: string,
+  options: DesktopActivationOptions = {},
+): Promise<void> {
+  if ((options.platform ?? process.platform) !== "win32") {
+    throw new Error("desktop-activation-unsupported");
+  }
+  const execute = options.execute ?? launchDetached;
+  const resolveDesktopExecutable =
+    options.resolveDesktopExecutable ?? findCodexDesktopAppExecutable;
+  const desktopExecutable = await resolveDesktopExecutable().catch(() => null);
+  if (desktopExecutable) {
+    try {
+      await execute(desktopExecutable, [url]);
+      return;
+    } catch {}
+  }
+  await execute("explorer.exe", [url]);
+}
+
+function launchDetached(executable: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, args, {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
 }
 
 type PendingRequest = {
