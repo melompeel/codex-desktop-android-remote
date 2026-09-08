@@ -312,6 +312,7 @@ private fun ConversationTimeline(
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     var positionedInitially by remember(detail.threadId) { mutableStateOf(false) }
+    var autoRequestedCursor by remember(detail.threadId) { mutableStateOf<String?>(null) }
     val showJumpToLatest by remember {
         derivedStateOf {
             val total = listState.layoutInfo.totalItemsCount
@@ -333,17 +334,26 @@ private fun ConversationTimeline(
         detail.threadId,
         positionedInitially,
         detail.hasMoreHistory,
+        detail.historyCursor,
         loadingOlderHistory,
     ) {
-        if (!positionedInitially || !detail.hasMoreHistory || loadingOlderHistory) {
+        if (
+            !positionedInitially ||
+            !detail.hasMoreHistory ||
+            detail.historyCursor == null ||
+            loadingOlderHistory
+        ) {
             return@LaunchedEffect
         }
-        var previousIndex = listState.firstVisibleItemIndex
-        snapshotFlow { listState.firstVisibleItemIndex }.collect { currentIndex ->
-            if (currentIndex < previousIndex && currentIndex <= 1) {
+        var previous = listState.historyViewport()
+        snapshotFlow { listState.historyViewport() }.collect { current ->
+            val underfilled = isHistoryViewportUnderfilled(current)
+            val automaticAlreadyRequested = underfilled && autoRequestedCursor == detail.historyCursor
+            if (shouldRequestOlderHistory(previous, current) && !automaticAlreadyRequested) {
+                if (underfilled) autoRequestedCursor = detail.historyCursor
                 onLoadOlderHistory()
             }
-            previousIndex = currentIndex
+            previous = current
         }
     }
 
@@ -433,6 +443,14 @@ private fun ConversationTimeline(
         }
     }
 }
+
+private fun androidx.compose.foundation.lazy.LazyListState.historyViewport() = HistoryViewport(
+    firstVisibleItemIndex = firstVisibleItemIndex,
+    firstVisibleItemScrollOffset = firstVisibleItemScrollOffset,
+    totalItemsCount = layoutInfo.totalItemsCount,
+    canScrollBackward = canScrollBackward,
+    canScrollForward = canScrollForward,
+)
 
 @Composable
 private fun ProcessDisclosure(

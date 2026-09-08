@@ -147,6 +147,55 @@ class ConversationPaneTest {
     }
 
     @Test
+    fun loadsOlderHistoryWhenAnActivePageCollapsesToLessThanOneScreen() {
+        var requested = false
+        val items = buildList {
+            add(TimelineItemDto("user", "turn-active", "user", "继续处理"))
+            repeat(48) { index ->
+                add(TimelineItemDto("step-$index", "turn-active", "status", "处理步骤 $index"))
+            }
+            add(TimelineItemDto("final", "turn-active", "assistant", "当前进度"))
+        }
+        compose.setContent {
+            MaterialTheme {
+                TaskConversationPane(
+                    task = TaskDto("active-history", "Active", "active", 8, 0, true),
+                    detail = TaskDetailDto(
+                        threadId = "active-history",
+                        title = "Active",
+                        status = "active",
+                        revision = 8,
+                        items = items,
+                        hasMoreHistory = true,
+                        historyCursor = "older-active-cursor",
+                    ),
+                    canWrite = true,
+                    draft = "",
+                    deliveryMode = DeliveryMode.STEER,
+                    queued = emptyList(),
+                    queueReady = false,
+                    attachments = emptyList(),
+                    models = emptyList(),
+                    capabilities = RemoteCapabilitiesDto(),
+                    sending = false,
+                    stopping = false,
+                    onDraftChange = {},
+                    onDeliveryChange = {},
+                    onSend = {},
+                    onStop = {},
+                    onCancelQueued = {},
+                    onOpenSettings = {},
+                    onAttachmentsSelected = {},
+                    onRemoveAttachment = {},
+                    onLoadOlderHistory = { requested = true },
+                )
+            }
+        }
+
+        compose.waitUntil(timeoutMillis = 3_000) { requested }
+    }
+
+    @Test
     fun keepsComposerVisibleAndToolDetailsCollapsedUntilRequested() {
         var sent = ""
         compose.setContent {

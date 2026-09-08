@@ -6,6 +6,39 @@ import org.junit.Test
 
 class ConversationHistoryTest {
     @Test
+    fun requestsAnotherPageWhenCollapsedBlocksFitWithoutScrolling() {
+        val viewport = viewport(
+            firstIndex = 0,
+            offset = 0,
+            totalItems = 3,
+            canScrollBackward = false,
+            canScrollForward = false,
+        )
+
+        assertEquals(true, shouldRequestOlderHistory(viewport, viewport))
+    }
+
+    @Test
+    fun requestsAnotherPageWhenScrollingUpInsideTheFirstTallBlock() {
+        val previous = viewport(firstIndex = 0, offset = 480, canScrollBackward = true)
+        val current = viewport(firstIndex = 0, offset = 0, canScrollForward = true)
+
+        assertEquals(true, shouldRequestOlderHistory(previous, current))
+    }
+
+    @Test
+    fun doesNotRequestHistoryWhileRemainingAtTheScrollableLatestPage() {
+        val viewport = viewport(
+            firstIndex = 8,
+            offset = 0,
+            canScrollBackward = true,
+            canScrollForward = false,
+        )
+
+        assertEquals(false, shouldRequestOlderHistory(viewport, viewport))
+    }
+
+    @Test
     fun prependsOlderPageWithoutDuplicatingTheAnchorMessage() {
         val current = detail(
             items = listOf(item("anchor", "latest request"), item("final", "latest result")),
@@ -64,5 +97,19 @@ class ConversationHistoryTest {
         turnId = "turn",
         kind = if (id == "anchor" || id == "old") "user" else "assistant",
         text = text,
+    )
+
+    private fun viewport(
+        firstIndex: Int,
+        offset: Int,
+        totalItems: Int = 12,
+        canScrollBackward: Boolean = false,
+        canScrollForward: Boolean = false,
+    ) = HistoryViewport(
+        firstVisibleItemIndex = firstIndex,
+        firstVisibleItemScrollOffset = offset,
+        totalItemsCount = totalItems,
+        canScrollBackward = canScrollBackward,
+        canScrollForward = canScrollForward,
     )
 }

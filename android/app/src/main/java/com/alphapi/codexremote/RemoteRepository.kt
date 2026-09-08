@@ -279,13 +279,13 @@ class RemoteRepository private constructor(context: Context) {
         val cursor = current.historyCursor ?: return
         if (!current.hasMoreHistory || threadId in snapshot.loadingOlderHistoryThreads) return
         val bridge = api ?: return
+        update {
+            it.copy(
+                loadingOlderHistoryThreads = it.loadingOlderHistoryThreads + threadId,
+                error = null,
+            )
+        }
         scope.launch {
-            update {
-                it.copy(
-                    loadingOlderHistoryThreads = it.loadingOlderHistoryThreads + threadId,
-                    error = null,
-                )
-            }
             runCatching { bridge.taskDetail(threadId, cursor) }
                 .onSuccess { older ->
                     if (api === bridge) {

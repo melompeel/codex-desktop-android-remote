@@ -1,5 +1,31 @@
 package com.alphapi.codexremote
 
+internal data class HistoryViewport(
+    val firstVisibleItemIndex: Int,
+    val firstVisibleItemScrollOffset: Int,
+    val totalItemsCount: Int,
+    val canScrollBackward: Boolean,
+    val canScrollForward: Boolean,
+)
+
+internal fun shouldRequestOlderHistory(
+    previous: HistoryViewport,
+    current: HistoryViewport,
+): Boolean {
+    if (isHistoryViewportUnderfilled(current)) return true
+    val movedTowardStart = current.firstVisibleItemIndex < previous.firstVisibleItemIndex ||
+        (
+            current.firstVisibleItemIndex == previous.firstVisibleItemIndex &&
+                current.firstVisibleItemScrollOffset < previous.firstVisibleItemScrollOffset
+            )
+    return movedTowardStart && current.firstVisibleItemIndex <= 1
+}
+
+internal fun isHistoryViewportUnderfilled(viewport: HistoryViewport): Boolean =
+    viewport.totalItemsCount > 0 &&
+        !viewport.canScrollBackward &&
+        !viewport.canScrollForward
+
 internal fun mergeOlderHistory(
     current: TaskDetailDto,
     older: TaskDetailDto,
