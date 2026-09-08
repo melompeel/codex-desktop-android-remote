@@ -80,6 +80,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -103,8 +104,8 @@ import io.noties.markwon.AbstractMarkwonPlugin
 import io.noties.markwon.MarkwonConfiguration
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.yield
 
 @Composable
 internal fun TaskConversationPane(
@@ -318,12 +319,8 @@ private fun ConversationTimeline(
             total > 2 && lastVisible < total - 2
         }
     }
-    var olderHistoryAutoLoadArmed by remember(detail.threadId) { mutableStateOf(false) }
-
     LaunchedEffect(detail.threadId, detail.revision, detail.items.size) {
-        yield()
-        val total = listState.layoutInfo.totalItemsCount
-        if (total == 0) return@LaunchedEffect
+        val total = snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
         val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
         val nearLatest = lastVisible >= total - 4
         if (!positionedInitially || nearLatest) {
@@ -333,21 +330,20 @@ private fun ConversationTimeline(
     }
 
     LaunchedEffect(
+        detail.threadId,
         positionedInitially,
-        listState.firstVisibleItemIndex,
         detail.hasMoreHistory,
         loadingOlderHistory,
     ) {
-        if (!positionedInitially) return@LaunchedEffect
-        if (listState.firstVisibleItemIndex > 1) {
-            olderHistoryAutoLoadArmed = true
-        } else if (
-            olderHistoryAutoLoadArmed &&
-            detail.hasMoreHistory &&
-            !loadingOlderHistory
-        ) {
-            olderHistoryAutoLoadArmed = false
-            onLoadOlderHistory()
+        if (!positionedInitially || !detail.hasMoreHistory || loadingOlderHistory) {
+            return@LaunchedEffect
+        }
+        var previousIndex = listState.firstVisibleItemIndex
+        snapshotFlow { listState.firstVisibleItemIndex }.collect { currentIndex ->
+            if (currentIndex < previousIndex && currentIndex <= 1) {
+                onLoadOlderHistory()
+            }
+            previousIndex = currentIndex
         }
     }
 
