@@ -13,6 +13,7 @@ public sealed record BridgeRuntimeInfo(
     [property: JsonPropertyName("port")] int Port,
     [property: JsonPropertyName("pid")] int Pid,
     [property: JsonPropertyName("startedAt")] long StartedAt,
+    [property: JsonPropertyName("buildId")] string? BuildId,
     [property: JsonPropertyName("desktopVersion")] string? DesktopVersion,
     [property: JsonPropertyName("runtimeVersion")] string? RuntimeVersion,
     [property: JsonPropertyName("addresses")] IReadOnlyList<BridgeAddress>? Addresses);

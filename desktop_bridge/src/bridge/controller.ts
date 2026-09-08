@@ -879,7 +879,17 @@ function assertSupportedSettings(
 
 function isRetryableOwnerError(error: unknown): boolean {
   const message = errorMessage(error).toLowerCase();
-  return ["owner", "unavailable", "timeout", "disconnect", "pipe", "not-connected"]
+  return [
+    "owner",
+    "unavailable",
+    "timeout",
+    "disconnect",
+    "pipe",
+    "not-connected",
+    "no-client-found",
+    "client-not-found",
+    "must be resumed",
+  ]
     .some((token) => message.includes(token));
 }
 

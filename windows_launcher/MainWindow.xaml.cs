@@ -49,7 +49,7 @@ public partial class MainWindow : Window
         AddressItems.ItemsSource = _addresses;
         DeviceItems.ItemsSource = _devices;
 
-        _manager = new BridgeManager(_client);
+        _manager = new BridgeManager(_client, VersionLabel);
         _manager.LogReceived += AppendLog;
         AppendLog($"Windows 管理器 {VersionLabel}");
         _pollTimer.Tick += async (_, _) => await RefreshAndRecoverAsync();
@@ -61,9 +61,10 @@ public partial class MainWindow : Window
         {
             _pollTimer.Start();
             _countdownTimer.Start();
-            await RefreshStatusAsync();
-            if (_settings.StartBridgeOnLaunch && _status is null)
+            if (_settings.StartBridgeOnLaunch)
                 await RunOperationAsync(() => _manager.StartAsync(CurrentPort));
+            else
+                await RefreshStatusAsync();
             if (Environment.GetCommandLineArgs().Contains("--minimized", StringComparer.OrdinalIgnoreCase))
                 HideToTray(showNotice: false);
         };
@@ -454,6 +455,9 @@ public partial class MainWindow : Window
     {
         if (!ManagerVersionText.Text.StartsWith("v", StringComparison.Ordinal))
             throw new InvalidOperationException("manager-version-label-missing");
+        if (!BridgeManager.RequiresBridgeRestart(null, VersionLabel) ||
+            BridgeManager.RequiresBridgeRestart(VersionLabel, VersionLabel))
+            throw new InvalidOperationException("bridge-build-comparison-smoke-failed");
         var device = new DeviceInfo(
             "smoke-device", "Smoke Android", "android", DateTimeOffset.Now.ToUnixTimeMilliseconds());
         var run = new System.Windows.Documents.Run { DataContext = device };

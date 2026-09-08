@@ -52,7 +52,7 @@ describe("Bridge HTTP API", () => {
     const local = await app.inject({ method: "GET", url: "/v1/local/status" });
     expect(local.statusCode).toBe(200);
     expect(local.json()).toMatchObject({
-      bridge: { host: "0.0.0.0", port: 8766 },
+      bridge: { host: "0.0.0.0", port: 8766, buildId: "test-build" },
       ipc: "connected",
       pairing: { code: "654321" },
       devices: [{ name: "Pixel", kind: "android" }],
@@ -1039,7 +1039,7 @@ appOptions: TestBridgeAppOptions = {}) {
     pairing,
     ipcStatus: () => "connected",
     asrStatus: () => ({ available: false, reason: "not-configured" }),
-    localStatus: () => ({ host: "0.0.0.0", port: 8766 }),
+    localStatus: () => ({ host: "0.0.0.0", port: 8766, buildId: "test-build" }),
     ...(appOptions.requestShutdown
       ? { requestShutdown: appOptions.requestShutdown }
       : {}),

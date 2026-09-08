@@ -7,9 +7,14 @@ namespace CodexRemoteManager;
 public sealed class BridgeManager : IDisposable
 {
     private readonly LocalBridgeClient _client;
+    private readonly string _buildId;
     private Process? _ownedProcess;
 
-    public BridgeManager(LocalBridgeClient client) => _client = client;
+    public BridgeManager(LocalBridgeClient client, string buildId)
+    {
+        _client = client;
+        _buildId = buildId;
+    }
 
     public event Action<string>? LogReceived;
 
@@ -18,8 +23,13 @@ public sealed class BridgeManager : IDisposable
         var existing = await _client.GetStatusAsync(port, cancellationToken);
         if (existing is not null)
         {
-            Log("已连接到正在运行的 Bridge，手机授权保持不变。");
-            return existing;
+            if (!RequiresBridgeRestart(existing.Bridge.BuildId, _buildId))
+            {
+                Log("已连接到当前版本的 Bridge，手机授权保持不变。");
+                return existing;
+            }
+            Log("检测到旧版 Bridge，正在切换到当前版本；手机授权保持不变。");
+            await StopAsync(port, cancellationToken);
         }
 
         if (IsPortListening(port))
@@ -43,6 +53,7 @@ public sealed class BridgeManager : IDisposable
         };
         info.Environment["BRIDGE_HOST"] = "0.0.0.0";
         info.Environment["BRIDGE_PORT"] = port.ToString();
+        info.Environment["BRIDGE_BUILD_ID"] = _buildId;
         info.Environment["BRIDGE_DATA_DIR"] = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "OneSCodexRemote");
 
@@ -193,6 +204,9 @@ public sealed class BridgeManager : IDisposable
 
     private static bool IsPortListening(int port) =>
         IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(endpoint => endpoint.Port == port);
+
+    internal static bool RequiresBridgeRestart(string? runningBuildId, string expectedBuildId) =>
+        !string.Equals(runningBuildId, expectedBuildId, StringComparison.Ordinal);
 
     private void HandleBridgeExited(Process process)
     {

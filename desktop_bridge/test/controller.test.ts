@@ -27,15 +27,19 @@ class FakeControl implements CodexControlPort {
 
   constructor(private readonly failures: {
     history?: number;
+    historyError?: string;
+    historyErrors?: string[];
     settings?: boolean;
     start?: boolean;
   } = {}) {}
 
   async loadHistory(threadId: string): Promise<IpcFrame> {
     this.calls.push(["loadHistory", threadId]);
+    const sequencedError = this.failures.historyErrors?.shift();
+    if (sequencedError) throw new Error(sequencedError);
     if ((this.failures.history ?? 0) > 0) {
       this.failures.history = (this.failures.history ?? 0) - 1;
-      throw new Error("desktop-owner-unavailable");
+      throw new Error(this.failures.historyError ?? "desktop-owner-unavailable");
     }
     return success();
   }
@@ -318,9 +322,51 @@ describe("BridgeController", () => {
     expect(control.calls.some(([name]) => name === "startTurn")).toBe(false);
   });
 
+  it("keeps waiting when Desktop reports no client before registering the new owner", async () => {
+    const store = new BridgeStore();
+    const control = new FakeControl({
+      historyErrors: [
+        "no-client-found",
+        "Conversation must be resumed before loading history",
+      ],
+    });
+    const controller = new BridgeController(
+      control,
+      store,
+      modelCatalog(),
+      {
+        async materialize() {
+          return {
+            threadId: "01a0705b-c5c1-7d00-95bc-efd02a96789b",
+            projectId: "project-1",
+            permissionProfile: ":workspace",
+          };
+        },
+      },
+      { timeoutMs: 3, pollIntervalMs: 1, sleep: async () => undefined },
+    );
+
+    await expect(controller.createTask({
+      cwd: "C:\\repo",
+      prompt: "真实任务",
+      model: "gpt-5.2-codex",
+      reasoningEffort: "high",
+    })).resolves.toMatchObject({
+      promptAccepted: true,
+      stage: "complete",
+    });
+    expect(control.calls.map(([name]) => name)).toEqual([
+      "loadHistory",
+      "loadHistory",
+      "loadHistory",
+      "settings",
+      "startTurn",
+    ]);
+  });
+
   it("activates one known historical task and waits for the Desktop owner", async () => {
     const store = new BridgeStore();
-    const control = new FakeControl({ history: 1 });
+    const control = new FakeControl({ history: 1, historyError: "no-client-found" });
     const activated: string[] = [];
     const controller = new BridgeController(
       control,

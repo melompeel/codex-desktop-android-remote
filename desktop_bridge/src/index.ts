@@ -32,6 +32,7 @@ import {
 
 const host = process.env.BRIDGE_HOST ?? "0.0.0.0";
 const port = Number(process.env.BRIDGE_PORT ?? 8765);
+const buildId = process.env.BRIDGE_BUILD_ID ?? null;
 const dataRoot =
   process.env.BRIDGE_DATA_DIR ??
   join(process.env.APPDATA ?? homedir(), "OneSCodexRemote");
@@ -113,6 +114,7 @@ const app = createBridgeApp({
     port,
     pid: process.pid,
     startedAt,
+    buildId,
     desktopVersion,
     runtimeVersion: runtime.version,
     addresses: lanAddresses().map((address) => ({
