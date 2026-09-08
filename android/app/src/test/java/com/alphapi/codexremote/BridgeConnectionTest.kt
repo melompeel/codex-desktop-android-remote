@@ -21,6 +21,63 @@ import org.junit.Test
 
 class BridgeConnectionTest {
     @Test
+    fun unauthorizedHttpResponseKeepsItsStatusCode() = runBlocking {
+        SocketFixture { socket, _ ->
+            socket.getOutputStream().apply {
+                val body = """{"error":"unauthorized"}"""
+                write(
+                    ("HTTP/1.1 401 Unauthorized\r\n" +
+                        "Content-Type: application/json\r\n" +
+                        "Content-Length: ${body.toByteArray().size}\r\n" +
+                        "Connection: close\r\n\r\n" +
+                        body).toByteArray(),
+                )
+                flush()
+            }
+        }.use { server ->
+            val error = runCatching {
+                BridgeApi(server.url, "expired-token").tasks()
+            }.exceptionOrNull()
+
+            assertTrue(error is BridgeHttpException)
+            assertEquals(401, (error as BridgeHttpException).statusCode)
+        }
+    }
+
+    @Test
+    fun taskCreationOutlivesTheSharedClientTimeout() = runBlocking {
+        SocketFixture { socket, _ ->
+            Thread.sleep(250)
+            socket.getOutputStream().apply {
+                val body = """{"threadId":"thread-created","promptAccepted":true,"stage":"complete"}"""
+                write(
+                    ("HTTP/1.1 200 OK\r\n" +
+                        "Content-Type: application/json\r\n" +
+                        "Content-Length: ${body.toByteArray().size}\r\n" +
+                        "Connection: close\r\n\r\n" +
+                        body).toByteArray(),
+                )
+                flush()
+            }
+        }.use { server ->
+            val client = OkHttpClient.Builder()
+                .callTimeout(75, TimeUnit.MILLISECONDS)
+                .build()
+            val response = BridgeApi(server.url, "test-only-token", client).createTask(
+                CreateTaskDraft(
+                    projectKey = "project",
+                    cwd = "C:\\Project",
+                    prompt = "test",
+                    model = "gpt-test",
+                    reasoningEffort = "low",
+                ),
+            )
+
+            assertEquals("thread-created", response.threadId)
+        }
+    }
+
+    @Test
     fun serverCloseImmediatelyReportsDisconnectedSoRepositoryCanReconnect() {
         SocketFixture { socket, headers ->
             upgrade(socket, headers)

@@ -66,6 +66,8 @@ data class TaskDetailDto(
     val status: String,
     val revision: Int,
     val items: List<TimelineItemDto> = emptyList(),
+    val hasMoreHistory: Boolean = false,
+    val historyCursor: String? = null,
     val cwd: String? = null,
     val cwdGroupKey: String? = null,
     val cwdGroupLabel: String? = null,
@@ -354,6 +356,7 @@ data class RemoteState(
     val loadingDiffThreads: Set<String> = emptySet(),
     val creatingTask: Boolean = false,
     val taskCreationError: String? = null,
+    val loadingOlderHistoryThreads: Set<String> = emptySet(),
     val error: String? = null,
 ) {
     val pendingTaskCount: Int

@@ -185,23 +185,34 @@ internal fun ProjectTaskList(
     groups: List<ProjectGroup>,
     selectedKey: String,
     selectedThreadId: String?,
+    connected: Boolean = true,
     loading: Boolean = false,
+    connectionError: String? = null,
     onTaskClick: (TaskDto) -> Unit,
 ) {
     val visibleGroups = remember(groups, selectedKey) { filteredProjectGroups(groups, selectedKey) }
     if (visibleGroups.isEmpty()) {
+        val presentation = emptyTaskListPresentation(connected, loading, connectionError)
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            if (loading) {
+            if (presentation.showLoading) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(30.dp).testTag("task-list-loading"),
                         strokeWidth = 3.dp,
                     )
                     Spacer(Modifier.height(12.dp))
-                    Text("任务较多，正在继续加载", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(presentation.message, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             } else {
-                Text("这里还没有任务", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    presentation.message,
+                    color = if (presentation.isError) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier.testTag("task-list-empty-state"),
+                )
             }
         }
         return

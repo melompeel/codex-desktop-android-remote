@@ -216,6 +216,85 @@ describe("task presentation", () => {
     expect(detail.items.at(-1)).toMatchObject({ kind: "assistant", text: "处理完成" });
   });
 
+  it("reserves timeline capacity for process details in a long conversation", () => {
+    const turns = Array.from({ length: 120 }, (_, index) => ({
+      id: `turn-${index}`,
+      status: "completed",
+      durationMs: 60_000 + index,
+      items: [
+        { id: `user-${index}`, type: "userMessage", content: `request ${index}` },
+        { id: `reasoning-${index}`, type: "reasoning", summary: [`step ${index}`] },
+        { id: `final-${index}`, type: "agentMessage", text: `result ${index}` },
+      ],
+    }));
+
+    const detail = presentThread({
+      threadId: "thread-long-conversation",
+      revision: 120,
+      state: { turns },
+    });
+
+    expect(detail.items).toHaveLength(200);
+    expect(detail.items.some((item) => item.kind === "status")).toBe(true);
+    expect(detail.items).toContainEqual(expect.objectContaining({
+      kind: "status",
+      text: "step 119",
+      turnDurationMs: 60_119,
+    }));
+    expect(detail.items.at(-1)).toMatchObject({ kind: "assistant", text: "result 119" });
+  });
+
+  it("pages recent history while anchoring the latest user request", () => {
+    const currentProcess = Array.from({ length: 70 }, (_, index) => ({
+      id: `current-step-${index}`,
+      type: "reasoning",
+      summary: [`current step ${index}`],
+    }));
+    const thread = {
+      threadId: "thread-paged-history",
+      revision: 9,
+      state: {
+        turns: [
+          {
+            id: "turn-older",
+            status: "completed",
+            items: [
+              { id: "older-user", type: "userMessage", content: "older request" },
+              ...Array.from({ length: 8 }, (_, index) => ({
+                id: `older-step-${index}`,
+                type: "reasoning",
+                summary: [`older step ${index}`],
+              })),
+              { id: "older-final", type: "agentMessage", text: "older result" },
+            ],
+          },
+          {
+            id: "turn-current",
+            status: "completed",
+            durationMs: 90_000,
+            items: [
+              { id: "current-user", type: "userMessage", content: "latest request" },
+              ...currentProcess,
+              { id: "current-final", type: "agentMessage", text: "latest result" },
+            ],
+          },
+        ],
+      },
+    };
+
+    const latest = presentThread(thread, { limit: 50 });
+
+    expect(latest.items).toHaveLength(50);
+    expect(latest.items[0]).toMatchObject({ kind: "user", text: "latest request" });
+    expect(latest.items.at(-1)).toMatchObject({ kind: "assistant", text: "latest result" });
+    expect(latest.hasMoreHistory).toBe(true);
+    expect(latest.historyCursor).toEqual(expect.any(String));
+
+    const older = presentThread(thread, { limit: 50, cursor: latest.historyCursor! });
+    expect(older.items[0]).toMatchObject({ kind: "user", text: "older request" });
+    expect(older.hasMoreHistory).toBe(false);
+  });
+
   it("turns assistant markdown images into ordered remote media items", () => {
     const thread = {
       threadId: "thread-markdown-image",

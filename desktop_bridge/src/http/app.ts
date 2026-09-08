@@ -323,7 +323,10 @@ export function createBridgeApp(
   });
 
   app.get("/v1/tasks/:threadId", async (request) => ({
-    task: await dependencies.controller.getTaskDetail(routeParam(request, "threadId")),
+    task: await dependencies.controller.getTaskDetail(
+      routeParam(request, "threadId"),
+      parseTaskHistoryQuery(asRecord(request.query)),
+    ),
   }));
 
   app.get("/v1/tasks/:threadId/media/:mediaId", async (request, reply) => {
@@ -830,6 +833,22 @@ function parseTaskListQuery(
     ...(cursor ? { cursor } : {}),
     ...(archived !== undefined ? { archived } : {}),
     ...(searchTerm ? { searchTerm } : {}),
+  };
+}
+
+function parseTaskHistoryQuery(
+  query: Record<string, unknown> | null,
+): { limit?: number; cursor?: string } {
+  const rawLimit = query?.historyLimit;
+  const cursor = readString(query?.historyCursor) ?? undefined;
+  if (rawLimit === undefined && !cursor) return {};
+  const limit = rawLimit === undefined ? 50 : Number(rawLimit);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new Error("invalid-history-limit");
+  }
+  return {
+    limit,
+    ...(cursor ? { cursor } : {}),
   };
 }
 

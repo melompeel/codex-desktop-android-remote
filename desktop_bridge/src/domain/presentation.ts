@@ -37,12 +37,19 @@ export type TaskDetail = {
   status: string;
   revision: number;
   items: TimelineItem[];
+  hasMoreHistory: boolean;
+  historyCursor?: string;
   cwd?: string;
   cwdGroupKey?: string;
   cwdGroupLabel?: string;
   gitInfo?: GitInfoSummary;
   settings?: ThreadSettingsSummary;
   activeTurnId?: string;
+};
+
+export type TimelinePageOptions = {
+  limit?: number;
+  cursor?: string;
 };
 
 export type GitInfoSummary = {
@@ -87,7 +94,10 @@ export type TaskDiff = {
 const MAX_ITEM_TEXT = 4_000;
 const MAX_ITEMS = 200;
 
-export function presentThread(thread: ThreadStream): TaskDetail {
+export function presentThread(
+  thread: ThreadStream,
+  options: TimelinePageOptions = {},
+): TaskDetail {
   const turns = orderedTurns(thread.state);
   const items: TimelineItem[] = [];
   for (let turnIndex = 0; turnIndex < turns.length; turnIndex += 1) {
@@ -114,69 +124,106 @@ export function presentThread(thread: ThreadStream): TaskDetail {
       })));
     }
   }
+  const page = pageTimelineItems(items, options);
   return {
     threadId: thread.threadId,
     title: readString(thread.state.title) || readString(thread.state.name) || "Untitled task",
     status: threadStatus(thread.state),
     revision: thread.revision,
-    items: limitTimelineItems(items),
+    items: page.items,
+    hasMoreHistory: page.hasMoreHistory,
+    ...(page.historyCursor ? { historyCursor: page.historyCursor } : {}),
     ...presentThreadMetadata(thread.state),
   };
 }
 
-function limitTimelineItems(items: TimelineItem[]): TimelineItem[] {
-  if (items.length <= MAX_ITEMS) return items;
-  const protectedIndexes = new Set<number>();
-  const indexesByTurn = new Map<string, number[]>();
-  items.forEach((item, index) => {
-    if (item.kind === "user" || item.kind === "userImage") protectedIndexes.add(index);
-    const turnIndexes = indexesByTurn.get(item.turnId) ?? [];
-    turnIndexes.push(index);
-    indexesByTurn.set(item.turnId, turnIndexes);
-  });
-  for (const indexes of indexesByTurn.values()) {
-    const finalAssistantIndex = findLastTimelineIndex(items, indexes, "assistant");
-    const finalImageIndex = findLastTimelineIndex(items, indexes, "image");
-    const anchorIndex = finalAssistantIndex ?? finalImageIndex;
-    if (anchorIndex === undefined) continue;
-    const sourceItemId = items[anchorIndex]?.sourceItemId;
-    if (!sourceItemId) {
-      protectedIndexes.add(anchorIndex);
-      continue;
-    }
-    for (const index of indexes) {
-      const item = items[index];
-      if (
-        item?.sourceItemId === sourceItemId &&
-        (item.kind === "assistant" || item.kind === "image")
-      ) protectedIndexes.add(index);
-    }
+function pageTimelineItems(
+  items: TimelineItem[],
+  options: TimelinePageOptions,
+): {
+  items: TimelineItem[];
+  hasMoreHistory: boolean;
+  historyCursor?: string;
+} {
+  const limit = options.limit ?? MAX_ITEMS;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_ITEMS) {
+    throw new Error("invalid-history-limit");
   }
+  const end = options.cursor
+    ? findTimelineCursor(items, options.cursor)
+    : items.length;
+  if (end === 0) return { items: [], hasMoreHistory: false };
 
-  const protectedList = [...protectedIndexes].sort((left, right) => left - right);
-  if (protectedList.length >= MAX_ITEMS) {
-    const retained = new Set(protectedList.slice(-MAX_ITEMS));
-    return items.filter((_, index) => retained.has(index));
-  }
-  const processBudget = MAX_ITEMS - protectedList.length;
-  const processIndexes = items
-    .map((_, index) => index)
-    .filter((index) => !protectedIndexes.has(index))
-    .slice(-processBudget);
-  const retained = new Set([...protectedList, ...processIndexes]);
-  return items.filter((_, index) => retained.has(index));
+  const initialStart = Math.max(0, end - limit);
+  const userIndex = findLatestUserIndex(items, end);
+  const userGroupIndexes = userIndex >= 0
+    ? latestUserGroupIndexes(items, userIndex, end)
+    : [];
+  const anchorIndexes = userGroupIndexes.some((index) => index < initialStart)
+    ? userGroupIndexes.slice(0, Math.max(1, Math.floor(limit / 3)))
+    : [];
+  const sliceBudget = Math.max(0, limit - anchorIndexes.length);
+  const start = Math.max(0, end - sliceBudget);
+  const anchors = anchorIndexes
+    .filter((index) => index < start)
+    .map((index) => items[index]!)
+    .slice(-(limit - Math.min(limit, end - start)));
+  const page = [...anchors, ...items.slice(start, end)];
+  const historyCursor = start > 0 ? encodeTimelineCursor(items[start]!) : undefined;
+  return {
+    items: page,
+    hasMoreHistory: start > 0,
+    ...(historyCursor ? { historyCursor } : {}),
+  };
 }
 
-function findLastTimelineIndex(
-  items: TimelineItem[],
-  indexes: number[],
-  kind: TimelineItem["kind"],
-): number | undefined {
-  for (let offset = indexes.length - 1; offset >= 0; offset -= 1) {
-    const index = indexes[offset];
-    if (index !== undefined && items[index]?.kind === kind) return index;
+function findLatestUserIndex(items: TimelineItem[], end: number): number {
+  for (let index = end - 1; index >= 0; index -= 1) {
+    const kind = items[index]?.kind;
+    if (kind === "user" || kind === "userImage") return index;
   }
-  return undefined;
+  return -1;
+}
+
+function latestUserGroupIndexes(
+  items: TimelineItem[],
+  userIndex: number,
+  end: number,
+): number[] {
+  const anchor = items[userIndex]!;
+  const sourceItemId = anchor.sourceItemId ?? anchor.id;
+  const result: number[] = [];
+  for (let index = 0; index < end; index += 1) {
+    const item = items[index]!;
+    if (
+      item.turnId === anchor.turnId &&
+      (item.sourceItemId ?? item.id) === sourceItemId &&
+      (item.kind === "user" || item.kind === "userImage")
+    ) result.push(index);
+  }
+  return result;
+}
+
+function encodeTimelineCursor(item: TimelineItem): string {
+  return Buffer.from(JSON.stringify([item.turnId, item.id]), "utf8").toString("base64url");
+}
+
+function findTimelineCursor(items: TimelineItem[], cursor: string): number {
+  let key: unknown;
+  try {
+    key = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    throw new Error("invalid-history-cursor");
+  }
+  if (
+    !Array.isArray(key) ||
+    key.length !== 2 ||
+    typeof key[0] !== "string" ||
+    typeof key[1] !== "string"
+  ) throw new Error("invalid-history-cursor");
+  const index = items.findIndex((item) => item.turnId === key[0] && item.id === key[1]);
+  if (index < 0) throw new Error("history-cursor-expired");
+  return index;
 }
 
 function readTurnDurationMs(turn: Record<string, unknown>): number | undefined {

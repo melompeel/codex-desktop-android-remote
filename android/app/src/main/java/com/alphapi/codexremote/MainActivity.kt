@@ -783,7 +783,9 @@ private fun TasksPane(
                 groups = groups,
                 selectedKey = selectedProjectKey,
                 selectedThreadId = state.selectedThreadId,
+                connected = state.connected,
                 loading = state.taskListLoading,
+                connectionError = state.error,
                 onTaskClick = { task ->
                     repository.select(task.threadId)
                     onOpenDetail()
@@ -798,6 +800,7 @@ private fun TasksPane(
         detail = state.taskDetail?.takeIf { it.threadId == selected.threadId },
         canWrite = canWrite,
         activating = selected.threadId in state.activatingThreads,
+        loadingOlderHistory = selected.threadId in state.loadingOlderHistoryThreads,
         draft = state.draftsByThread[selected.threadId].orEmpty(),
         deliveryMode = state.deliveryByThread[selected.threadId] ?: defaultDeliveryFor(selected.status),
         queued = state.queueByThread[selected.threadId].orEmpty(),
@@ -824,6 +827,7 @@ private fun TasksPane(
         onOpenResource = { repository.openTaskResource(selected.threadId, it) },
         onLoadWorkspaceFiles = { repository.loadWorkspaceFiles(selected.threadId, it) },
         onWorkspaceFileSelected = { repository.addWorkspaceAttachment(selected.threadId, it) },
+        onLoadOlderHistory = { repository.loadOlderHistory(selected.threadId) },
     )
 }
 

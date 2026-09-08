@@ -35,7 +35,7 @@ class RemoteRepository private constructor(context: Context) {
     @Volatile private var api: BridgeApi? = null
     private var stream: WebSocket? = null
     private val reconnectScheduler = ReconnectScheduler(scope) {
-        if (api != null) {
+        if (api != null && !authorizationExpired) {
             openStream()
             refreshWithRecovery()
         }
@@ -43,6 +43,7 @@ class RemoteRepository private constructor(context: Context) {
     private var refreshCoordinator: ConflatedRefreshCoordinator? = null
     private var restoreJob: Job? = null
     @Volatile private var streamGeneration = 0
+    @Volatile private var authorizationExpired = false
     private var followedThreadId: String? = null
     private var mediaCacheKey = ""
     private val mediaCache = TaskMediaCache(File(applicationContext.cacheDir, "task_media"))
@@ -222,6 +223,7 @@ class RemoteRepository private constructor(context: Context) {
             it.copy(
                 selectedThreadId = threadId,
                 taskDetail = null,
+                loadingOlderHistoryThreads = emptySet(),
                 taskMediaById = emptyMap(),
                 loadingTaskMediaIds = emptySet(),
                 failedTaskMediaIds = emptySet(),
@@ -267,6 +269,39 @@ class RemoteRepository private constructor(context: Context) {
                         activatingThreads = it.activatingThreads - threadId,
                     )
                 }
+            }
+        }
+    }
+
+    fun loadOlderHistory(threadId: String) {
+        val snapshot = mutableState.value
+        val current = snapshot.taskDetail?.takeIf { it.threadId == threadId } ?: return
+        val cursor = current.historyCursor ?: return
+        if (!current.hasMoreHistory || threadId in snapshot.loadingOlderHistoryThreads) return
+        val bridge = api ?: return
+        scope.launch {
+            update {
+                it.copy(
+                    loadingOlderHistoryThreads = it.loadingOlderHistoryThreads + threadId,
+                    error = null,
+                )
+            }
+            runCatching { bridge.taskDetail(threadId, cursor) }
+                .onSuccess { older ->
+                    if (api === bridge) {
+                        update { state ->
+                            val detail = state.taskDetail
+                            if (state.selectedThreadId != threadId || detail?.threadId != threadId) {
+                                state
+                            } else {
+                                state.copy(taskDetail = mergeOlderHistory(detail, older))
+                            }
+                        }
+                    }
+                }
+                .onFailure(::recordError)
+            update {
+                it.copy(loadingOlderHistoryThreads = it.loadingOlderHistoryThreads - threadId)
             }
         }
     }
@@ -476,7 +511,7 @@ class RemoteRepository private constructor(context: Context) {
                 }
                 .onFailure { error ->
                     if (error !is CancellationException) {
-                        update { it.copy(taskCreationError = error.message ?: "新建任务失败") }
+                        update { it.copy(taskCreationError = authenticatedBridgeErrorMessage(error)) }
                     }
                 }
             update { it.copy(creatingTask = false) }
@@ -620,6 +655,7 @@ class RemoteRepository private constructor(context: Context) {
     }
 
     private fun configure(saved: StoredConnection) {
+        authorizationExpired = false
         refreshCoordinator?.dispose()
         refreshCoordinator = ConflatedRefreshCoordinator(scope) {
             refreshWithRecovery()
@@ -670,6 +706,7 @@ class RemoteRepository private constructor(context: Context) {
 
     private fun openStream() {
         val bridge = api ?: return
+        if (authorizationExpired) return
         reconnectScheduler.cancel()
         val generation = ++streamGeneration
         stream?.cancel()
@@ -691,7 +728,12 @@ class RemoteRepository private constructor(context: Context) {
                     scheduleRefresh(0)
                 } else {
                     followedThreadId = null
-                    reconnectScheduler.schedule()
+                    if (!authorizationExpired) reconnectScheduler.schedule()
+                }
+            },
+            onConnectionFailure = { error ->
+                if (generation == streamGeneration && isAuthorizationFailure(error)) {
+                    markAuthorizationExpired(error)
                 }
             },
         )
@@ -740,9 +782,10 @@ class RemoteRepository private constructor(context: Context) {
         val completedReviewThreadIds = pendingReviewStore.observe(payload.tasks)
         val current = mutableState.value
         val selectedThreadId = threadIdForDetail(current.selectedThreadId, payload.tasks)
-        val detail = selectedThreadId?.let { selected ->
+        val latestDetail = selectedThreadId?.let { selected ->
             runCatching { bridge.taskDetail(selected) }.getOrNull()
         }
+        val detail = latestDetail?.let { mergeLatestHistory(current.taskDetail, it) }
         val queue = if (selectedThreadId != null && payload.capabilities.queue) {
             runCatching { bridge.queue(selectedThreadId) }.getOrNull()
         } else null
@@ -784,8 +827,10 @@ class RemoteRepository private constructor(context: Context) {
             throw error
         } catch (error: Throwable) {
             val presentation = refreshFailurePresentation(error, mutableState.value)
+            if (isAuthorizationFailure(error)) markAuthorizationExpired(error)
             update {
                 it.copy(
+                    connected = if (isAuthorizationFailure(error)) false else it.connected,
                     taskListLoading = presentation.shouldRetry && it.tasks.isEmpty(),
                     error = presentation.message.takeIf { presentation.isError },
                 )
@@ -866,7 +911,23 @@ class RemoteRepository private constructor(context: Context) {
     private fun requireApi(): BridgeApi = requireNotNull(api) { "Bridge is not configured" }
     private fun recordError(error: Throwable) {
         if (error is CancellationException) return
-        update { it.copy(error = error.message) }
+        if (isAuthorizationFailure(error)) markAuthorizationExpired(error)
+        update { it.copy(error = authenticatedBridgeErrorMessage(error)) }
+    }
+    private fun markAuthorizationExpired(error: Throwable) {
+        authorizationExpired = true
+        reconnectScheduler.cancel()
+        followedThreadId = null
+        streamGeneration += 1
+        stream?.cancel()
+        stream = null
+        update {
+            it.copy(
+                connected = false,
+                taskListLoading = false,
+                error = authenticatedBridgeErrorMessage(error),
+            )
+        }
     }
     private fun update(block: (RemoteState) -> RemoteState) { mutableState.update(block) }
 

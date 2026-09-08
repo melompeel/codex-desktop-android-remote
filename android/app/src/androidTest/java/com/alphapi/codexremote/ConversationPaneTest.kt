@@ -94,6 +94,49 @@ class ConversationPaneTest {
     }
 
     @Test
+    fun letsTheUserLoadOlderConversationHistory() {
+        var requested = false
+        compose.setContent {
+            MaterialTheme {
+                TaskConversationPane(
+                    task = TaskDto("history", "History", "idle", 1, 0, true),
+                    detail = TaskDetailDto(
+                        threadId = "history",
+                        title = "History",
+                        status = "idle",
+                        revision = 1,
+                        items = listOf(TimelineItemDto("latest", "turn", "assistant", "最近回复")),
+                        hasMoreHistory = true,
+                        historyCursor = "older-cursor",
+                    ),
+                    canWrite = true,
+                    draft = "",
+                    deliveryMode = DeliveryMode.START,
+                    queued = emptyList(),
+                    queueReady = false,
+                    attachments = emptyList(),
+                    models = emptyList(),
+                    capabilities = RemoteCapabilitiesDto(),
+                    sending = false,
+                    stopping = false,
+                    onDraftChange = {},
+                    onDeliveryChange = {},
+                    onSend = {},
+                    onStop = {},
+                    onCancelQueued = {},
+                    onOpenSettings = {},
+                    onAttachmentsSelected = {},
+                    onRemoveAttachment = {},
+                    onLoadOlderHistory = { requested = true },
+                )
+            }
+        }
+
+        compose.onNodeWithText("加载更早记录").performClick()
+        compose.runOnIdle { assertTrue(requested) }
+    }
+
+    @Test
     fun keepsComposerVisibleAndToolDetailsCollapsedUntilRequested() {
         var sent = ""
         compose.setContent {

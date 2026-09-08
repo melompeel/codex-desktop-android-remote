@@ -112,6 +112,7 @@ internal fun TaskConversationPane(
     detail: TaskDetailDto?,
     canWrite: Boolean,
     activating: Boolean = false,
+    loadingOlderHistory: Boolean = false,
     draft: String,
     deliveryMode: DeliveryMode,
     queued: List<QueuedFollowUpDto>,
@@ -138,6 +139,7 @@ internal fun TaskConversationPane(
     onLoadWorkspaceFiles: (String) -> Unit = {},
     onWorkspaceFileSelected: (WorkspaceFileDto) -> Unit = {},
     onLoadTaskMedia: (String) -> Unit = {},
+    onLoadOlderHistory: () -> Unit = {},
 ) {
     var showWorkspaceFiles by rememberSaveable { mutableStateOf(false) }
     val imagePicker = rememberLauncherForActivityResult(
@@ -173,6 +175,8 @@ internal fun TaskConversationPane(
                     failedTaskMediaIds,
                     onOpenResource,
                     onLoadTaskMedia,
+                    loadingOlderHistory,
+                    onLoadOlderHistory,
                 )
             }
         }
@@ -273,6 +277,8 @@ private fun ConversationTimeline(
     failedTaskMediaIds: Set<String>,
     onOpenResource: (TimelineResourceDto) -> Unit,
     onLoadTaskMedia: (String) -> Unit,
+    loadingOlderHistory: Boolean,
+    onLoadOlderHistory: () -> Unit,
 ) {
     val context = LocalContext.current
     val blocks = remember(detail.items) { presentConversation(detail.items) }
@@ -312,6 +318,7 @@ private fun ConversationTimeline(
             total > 2 && lastVisible < total - 2
         }
     }
+    var olderHistoryAutoLoadArmed by remember(detail.threadId) { mutableStateOf(false) }
 
     LaunchedEffect(detail.threadId, detail.revision, detail.items.size) {
         yield()
@@ -325,12 +332,50 @@ private fun ConversationTimeline(
         positionedInitially = true
     }
 
+    LaunchedEffect(
+        positionedInitially,
+        listState.firstVisibleItemIndex,
+        detail.hasMoreHistory,
+        loadingOlderHistory,
+    ) {
+        if (!positionedInitially) return@LaunchedEffect
+        if (listState.firstVisibleItemIndex > 1) {
+            olderHistoryAutoLoadArmed = true
+        } else if (
+            olderHistoryAutoLoadArmed &&
+            detail.hasMoreHistory &&
+            !loadingOlderHistory
+        ) {
+            olderHistoryAutoLoadArmed = false
+            onLoadOlderHistory()
+        }
+    }
+
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 16.dp),
         ) {
+            if (detail.hasMoreHistory) {
+                item("older-history") {
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        TextButton(
+                            onClick = onLoadOlderHistory,
+                            enabled = !loadingOlderHistory,
+                            modifier = Modifier.testTag("loadOlderHistory"),
+                        ) {
+                            if (loadingOlderHistory) {
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(8.dp))
+                                Text("正在加载更早记录")
+                            } else {
+                                Text("加载更早记录")
+                            }
+                        }
+                    }
+                }
+            }
             if (detail.items.isEmpty() && detail.status != "active") {
                 item("empty") {
                     Text(

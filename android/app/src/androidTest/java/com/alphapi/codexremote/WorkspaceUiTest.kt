@@ -28,6 +28,25 @@ class WorkspaceUiTest {
     val compose = createComposeRule()
 
     @Test
+    fun disconnectedTaskListDoesNotShowTheLoadingSpinner() {
+        compose.setContent {
+            MaterialTheme {
+                ProjectTaskList(
+                    groups = emptyList(),
+                    selectedKey = ProjectGroup.ALL_KEY,
+                    selectedThreadId = null,
+                    connected = false,
+                    loading = true,
+                    onTaskClick = {},
+                )
+            }
+        }
+
+        compose.onAllNodesWithTag("task-list-loading").assertCountEquals(0)
+        compose.onNodeWithText("Bridge 未连接").assertIsDisplayed()
+    }
+
+    @Test
     fun showsAStableRunningIndicatorOnlyForActiveTasks() {
         compose.setContent {
             MaterialTheme {

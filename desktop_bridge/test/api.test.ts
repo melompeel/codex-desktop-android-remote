@@ -114,6 +114,57 @@ describe("Bridge HTTP API", () => {
     expect(replay.statusCode).toBe(409);
   });
 
+  it("pages task history for new clients while preserving the legacy response size", async () => {
+    const { app, registry, store } = setup();
+    const token = (await registry.issue("device-history", "Pixel", "android")).token;
+    store.applyStreamChange("thread-history", {
+      type: "snapshot",
+      revision: 1,
+      conversationState: {
+        title: "History",
+        turns: [{
+          id: "turn-history",
+          status: "completed",
+          items: [
+            { id: "user-history", type: "userMessage", content: "latest request" },
+            ...Array.from({ length: 78 }, (_, index) => ({
+              id: `reasoning-${index}`,
+              type: "reasoning",
+              summary: [`step ${index}`],
+            })),
+            { id: "final-history", type: "agentMessage", text: "latest result" },
+          ],
+        }],
+        requests: [],
+      },
+    });
+
+    const pagePath = "/v1/tasks/thread-history?historyLimit=10";
+    const pageResponse = await app.inject({
+      method: "GET",
+      url: pagePath,
+      headers: signedHeaders(token, "GET", pagePath, "", "history-page"),
+    });
+    const page = pageResponse.json<{ task: {
+      items: Array<{ kind: string }>;
+      hasMoreHistory: boolean;
+      historyCursor: string;
+    } }>().task;
+
+    expect(pageResponse.statusCode).toBe(200);
+    expect(page.items).toHaveLength(10);
+    expect(page.items[0]).toMatchObject({ kind: "user" });
+    expect(page.hasMoreHistory).toBe(true);
+
+    const legacyPath = "/v1/tasks/thread-history";
+    const legacyResponse = await app.inject({
+      method: "GET",
+      url: legacyPath,
+      headers: signedHeaders(token, "GET", legacyPath, "", "history-legacy"),
+    });
+    expect(legacyResponse.json<{ task: { items: unknown[] } }>().task.items).toHaveLength(80);
+  });
+
   it("sends a signed message and rejects an unconfirmed push request", async () => {
     const { app, control, registry } = setup();
     const token = (await registry.issue("device-1", "One S", "ones")).token;

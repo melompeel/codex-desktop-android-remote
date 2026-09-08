@@ -30,6 +30,13 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 
+internal class BridgeHttpException(
+    val statusCode: Int,
+    val serverError: String,
+) : IOException(
+    "Bridge $statusCode: ${serverError.ifBlank { "request-failed" }}",
+)
+
 class BridgeApi(
     baseUrl: String,
     private val token: String?,
@@ -40,6 +47,9 @@ class BridgeApi(
 ) {
     private val root = BridgeEndpoint.normalize(baseUrl)
     private val json = Json { ignoreUnknownKeys = true }
+    private val taskCreationClient = client.newBuilder()
+        .callTimeout(180, TimeUnit.SECONDS)
+        .build()
 
     suspend fun pair(code: String, name: String): PairResponse {
         val body = json.encodeToString(
@@ -75,10 +85,13 @@ class BridgeApi(
         execute<Unit>("POST", "/v1/tasks/$threadId/activate", body) { }
     }
 
-    suspend fun taskDetail(threadId: String): TaskDetailDto =
-        execute("GET", "/v1/tasks/$threadId") { response ->
+    suspend fun taskDetail(threadId: String, historyCursor: String? = null): TaskDetailDto {
+        val path = "/v1/tasks/$threadId?historyLimit=50" +
+            historyCursor?.let { "&historyCursor=${encodeQuery(it)}" }.orEmpty()
+        return execute("GET", path) { response ->
             json.decodeFromString<TaskDetailResponse>(response.body!!.string()).task
         }
+    }
 
     suspend fun taskMedia(threadId: String, mediaId: String, destination: File) {
         val path = "/v1/tasks/${encodePathSegment(threadId)}/media/${encodePathSegment(mediaId)}"
@@ -189,7 +202,12 @@ class BridgeApi(
             draft.reasoningEffort?.let { put("reasoningEffort", it) }
             put("idempotencyKey", UUID.randomUUID().toString())
         })
-        return execute("POST", "/v1/tasks", body) { response ->
+        return execute(
+            method = "POST",
+            path = "/v1/tasks",
+            body = body,
+            httpClient = taskCreationClient,
+        ) { response ->
             json.decodeFromString(response.body!!.string())
         }
     }
@@ -268,7 +286,11 @@ class BridgeApi(
         execute<Unit>("POST", "/v1/user-input/$requestId", body) { }
     }
 
-    fun stream(onEvent: (BridgeEvent) -> Unit, onConnected: (Boolean) -> Unit): WebSocket {
+    fun stream(
+        onEvent: (BridgeEvent) -> Unit,
+        onConnected: (Boolean) -> Unit,
+        onConnectionFailure: (Throwable) -> Unit = {},
+    ): WebSocket {
         val path = "/v1/stream"
         val request = signedBuilder("GET", path, ByteArray(0))
             .url(root.replaceFirst("http://", "ws://").replaceFirst("https://", "wss://") + path)
@@ -289,7 +311,14 @@ class BridgeApi(
                 reportDisconnected()
             }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = reportDisconnected()
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = reportDisconnected()
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                onConnectionFailure(
+                    response?.let {
+                        BridgeHttpException(it.code, it.body?.string().orEmpty())
+                    } ?: t,
+                )
+                reportDisconnected()
+            }
         })
     }
 
@@ -298,6 +327,7 @@ class BridgeApi(
         path: String,
         body: String = "",
         authenticated: Boolean = true,
+        httpClient: OkHttpClient = client,
         read: (Response) -> T,
     ): T = executeBytes(
         method = method,
@@ -305,6 +335,7 @@ class BridgeApi(
         body = body.toByteArray(Charsets.UTF_8),
         mediaType = "application/json",
         authenticated = authenticated,
+        httpClient = httpClient,
         read = read,
     )
 
@@ -315,6 +346,7 @@ class BridgeApi(
         mediaType: String,
         authenticated: Boolean = true,
         headers: Map<String, String> = emptyMap(),
+        httpClient: OkHttpClient = client,
         read: (Response) -> T,
     ): T = withContext(Dispatchers.IO) {
         val bytes = body
@@ -325,7 +357,7 @@ class BridgeApi(
             builder.method(method, bytes.toRequestBody(mediaType.toMediaType()))
         }
         suspendCancellableCoroutine { continuation ->
-            val call = client.newCall(builder.build())
+            val call = httpClient.newCall(builder.build())
             continuation.invokeOnCancellation { call.cancel() }
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
@@ -336,7 +368,7 @@ class BridgeApi(
                     val result = runCatching {
                         response.use {
                             if (!it.isSuccessful) {
-                                throw IllegalStateException("Bridge ${it.code}: ${it.body?.string().orEmpty()}")
+                                throw BridgeHttpException(it.code, it.body?.string().orEmpty())
                             }
                             read(it)
                         }

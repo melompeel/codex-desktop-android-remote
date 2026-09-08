@@ -79,6 +79,45 @@ class ConnectionLoadingStateTest {
         assertTrue(presentation.isError)
     }
 
+    @Test
+    fun explicitConnectionErrorStopsTheConnectingPresentation() {
+        val presentation = connectionStatusPresentation(
+            RemoteState(
+                connected = false,
+                taskListLoading = true,
+                error = "连接超时，请检查网络",
+            ),
+        )
+
+        assertEquals("连接超时，请检查网络", presentation.text)
+        assertTrue(presentation.isError)
+    }
+
+    @Test
+    fun disconnectedTaskListNeverShowsAFalseLoadingState() {
+        val presentation = emptyTaskListPresentation(
+            connected = false,
+            loading = true,
+            error = null,
+        )
+
+        assertFalse(presentation.showLoading)
+        assertEquals("Bridge 未连接", presentation.message)
+        assertTrue(presentation.isError)
+    }
+
+    @Test
+    fun unauthorizedRefreshRequiresPairingAndDoesNotRetry() {
+        val presentation = refreshFailurePresentation(
+            BridgeHttpException(401, "{\"error\":\"unauthorized\"}"),
+            RemoteState(connected = true, taskListLoading = true),
+        )
+
+        assertEquals("当前终端授权已失效，请在 Codex 终端中重新配对", presentation.message)
+        assertFalse(presentation.shouldRetry)
+        assertTrue(presentation.isError)
+    }
+
     private fun task(threadId: String) = TaskDto(
         threadId = threadId,
         title = threadId,

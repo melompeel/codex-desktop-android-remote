@@ -29,6 +29,7 @@ import {
   type GitInfoSummary,
   type TaskDetail,
   type TaskDiff,
+  type TimelinePageOptions,
   type ThreadMediaFile,
   type ThreadResourceFile,
   type ThreadSettingsSummary,
@@ -456,12 +457,15 @@ export class BridgeController {
     }));
   }
 
-  async getTaskDetail(threadId: string): Promise<TaskDetail> {
+  async getTaskDetail(
+    threadId: string,
+    page: TimelinePageOptions = {},
+  ): Promise<TaskDetail> {
     const live = this.store.getThread(threadId);
-    if (live) return presentThread(live);
+    if (live) return presentThread(live, page);
     const history = await this.catalog?.readThread?.(threadId);
     if (!history) throw new Error("task-detail-not-found");
-    return presentThread({ threadId, revision: 0, state: history });
+    return presentThread({ threadId, revision: 0, state: history }, page);
   }
 
   async getTaskMedia(threadId: string, mediaId: string): Promise<ThreadMediaFile> {
