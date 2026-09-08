@@ -56,13 +56,10 @@ class RemoteService : Service() {
                 val hasActiveTask = state.tasks.any { isActiveTaskStatus(it.status) }
                 updateActiveTaskWakeLock(hasActiveTask)
                 backgroundRefresh?.updateSchedule()
-                val connectionText = when {
-                    !state.connected -> "手机与 Bridge 连接中断"
-                    !state.ipcConnected -> "Bridge 已连接，Codex Desktop 未连接"
-                    state.desktopVersion != null -> "Codex Desktop ${state.desktopVersion} 已连接"
-                    else -> "正在监听当前 Codex 任务"
-                }
-                manager.notify(CONNECTION_NOTIFICATION, connectionNotification(connectionText))
+                manager.notify(
+                    CONNECTION_NOTIFICATION,
+                    connectionNotification(connectionStatusPresentation(state).text),
+                )
                 val activeIds = state.approvals.mapTo(mutableSetOf()) { it.requestId }
                 val resolvedIds = shownApprovals.filterNot(activeIds::contains)
                 resolvedIds.forEach { requestId -> manager.cancel(requestId.hashCode()) }

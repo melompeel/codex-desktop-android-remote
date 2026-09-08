@@ -4,6 +4,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertTextContains
@@ -23,6 +24,46 @@ import org.junit.Assert.assertTrue
 class WorkspaceUiTest {
     @get:Rule
     val compose = createComposeRule()
+
+    @Test
+    fun showsTheUserSelectedLanRouteInTheDrawer() {
+        compose.setContent {
+            MaterialTheme {
+                ProjectDrawerContent(
+                    groups = emptyList(),
+                    selectedKey = ProjectGroup.ALL_KEY,
+                    activeServerUrl = "http://192.168.1.20:8766",
+                    onSelect = {},
+                    onManageConnections = {},
+                    onCheckUpdates = {},
+                    useSystemRoute = false,
+                )
+            }
+        }
+
+        compose.onNodeWithText("当前终端使用局域网直连").assertIsDisplayed()
+        compose.onNodeWithTag("system-route-switch").assertIsDisplayed()
+    }
+
+    @Test
+    fun letsTheUserChooseTheRouteForATailscaleEndpoint() {
+        compose.setContent {
+            MaterialTheme {
+                ProjectDrawerContent(
+                    groups = emptyList(),
+                    selectedKey = ProjectGroup.ALL_KEY,
+                    activeServerUrl = "http://100.104.36.62:8766",
+                    onSelect = {},
+                    onManageConnections = {},
+                    onCheckUpdates = {},
+                    useSystemRoute = true,
+                )
+            }
+        }
+
+        compose.onNodeWithText("通过系统 VPN / 代理").assertIsDisplayed()
+        compose.onNodeWithTag("system-route-switch").assertIsEnabled()
+    }
 
     @Test
     fun explainsWhyDesktopTaskCreationIsUnavailable() {

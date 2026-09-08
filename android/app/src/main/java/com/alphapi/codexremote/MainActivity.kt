@@ -314,6 +314,8 @@ private fun RemoteHome(
                     updateState = UpdateState.Checking
                     scope.launch { updateState = updater.check() }
                 },
+                useSystemRoute = state.connectionRouteMode == ConnectionRouteMode.SYSTEM,
+                onUseSystemRouteChange = repository::setUseSystemRoute,
             )
         },
     ) {
@@ -342,17 +344,17 @@ private fun RemoteHome(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
-                            val status = when {
-                                !state.connected -> "手机连接中断，正在重连"
-                                !state.ipcConnected -> "Codex Desktop 未连接"
-                                state.desktopVersion != null -> "Codex Desktop ${state.desktopVersion}"
-                                else -> "Codex Desktop 已连接"
+                            val connectionStatus = connectionStatusPresentation(state)
+                            val statusColor = if (connectionStatus.isError) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                Color(0xFF197344)
                             }
-                            val statusColor = when {
-                                !state.connected || !state.ipcConnected -> MaterialTheme.colorScheme.error
-                                else -> Color(0xFF197344)
-                            }
-                            Text(status, style = MaterialTheme.typography.labelSmall, color = statusColor)
+                            Text(
+                                connectionStatus.text,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = statusColor,
+                            )
                         }
                     },
                     actions = {
@@ -781,6 +783,7 @@ private fun TasksPane(
                 groups = groups,
                 selectedKey = selectedProjectKey,
                 selectedThreadId = state.selectedThreadId,
+                loading = state.taskListLoading,
                 onTaskClick = { task ->
                     repository.select(task.threadId)
                     onOpenDetail()

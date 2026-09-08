@@ -21,6 +21,7 @@ data class StoredConnection(
     val token: String,
     val name: String = defaultConnectionName(serverUrl),
     val id: String = UUID.randomUUID().toString(),
+    val routeMode: ConnectionRouteMode = ConnectionRouteMode.SYSTEM,
 )
 
 internal data class ConnectionCatalog(
@@ -61,6 +62,15 @@ internal data class ConnectionCatalog(
         val remaining = connections.filterNot { it.id == connectionId }
         val nextActiveId = if (activeId == connectionId) remaining.first().id else activeId
         return ConnectionCatalog(nextActiveId, remaining)
+    }
+
+    fun updateRouteMode(connectionId: String, routeMode: ConnectionRouteMode): ConnectionCatalog? {
+        if (connections.none { it.id == connectionId }) return null
+        return copy(
+            connections = connections.map { connection ->
+                if (connection.id == connectionId) connection.copy(routeMode = routeMode) else connection
+            },
+        )
     }
 
     fun summaries(): List<SavedServerAddress> {
@@ -108,6 +118,13 @@ class CredentialStore(context: Context) {
         val catalog = readCatalog()?.remove(connectionId) ?: return null
         writeCatalog(catalog)
         return catalog.active
+    }
+
+    @Synchronized
+    fun updateRouteMode(connectionId: String, routeMode: ConnectionRouteMode): StoredConnection? {
+        val catalog = readCatalog()?.updateRouteMode(connectionId, routeMode) ?: return null
+        writeCatalog(catalog)
+        return catalog.connections.firstOrNull { it.id == connectionId }
     }
 
     @Synchronized
@@ -250,6 +267,7 @@ private fun encodeCatalog(catalog: ConnectionCatalog): String = JSONObject().app
                         put("serverUrl", connection.serverUrl)
                         put("deviceId", connection.deviceId)
                         put("token", connection.token)
+                        put("routeMode", connection.routeMode.name.lowercase())
                     },
                 )
             }
@@ -270,6 +288,9 @@ private fun decodeCatalog(raw: String): ConnectionCatalog {
                     serverUrl = item.getString("serverUrl"),
                     deviceId = item.getString("deviceId"),
                     token = item.getString("token"),
+                    routeMode = runCatching {
+                        ConnectionRouteMode.valueOf(item.optString("routeMode", "system").uppercase())
+                    }.getOrDefault(ConnectionRouteMode.SYSTEM),
                 ),
             )
         }

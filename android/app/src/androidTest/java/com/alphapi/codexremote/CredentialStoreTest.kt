@@ -36,6 +36,7 @@ class CredentialStoreTest {
             deviceId = "android-office",
             token = "token-office",
             name = "办公室电脑",
+            routeMode = ConnectionRouteMode.DIRECT_LAN,
         )
         store.save(remote)
 
@@ -43,6 +44,7 @@ class CredentialStoreTest {
 
         assertEquals("http://192.168.1.8:8766", active?.serverUrl)
         assertEquals("token-office", active?.token)
+        assertEquals(ConnectionRouteMode.DIRECT_LAN, CredentialStore(context).load()?.routeMode)
         assertEquals(
             listOf(
                 SavedServerAddress("办公室电脑", "http://192.168.1.8:8766", "office"),
@@ -66,6 +68,10 @@ class CredentialStoreTest {
         )
         assertEquals("token-remote", edited?.token)
         assertEquals("http://192.168.50.20:8766", CredentialStore(context).load()?.serverUrl)
+
+        val routed = store.updateRouteMode("remote", ConnectionRouteMode.DIRECT_LAN)
+        assertEquals(ConnectionRouteMode.DIRECT_LAN, routed?.routeMode)
+        assertEquals(ConnectionRouteMode.DIRECT_LAN, CredentialStore(context).load()?.routeMode)
 
         store.removeConnection("office")
         assertEquals(

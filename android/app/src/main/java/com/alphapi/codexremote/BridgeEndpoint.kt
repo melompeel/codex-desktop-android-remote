@@ -36,8 +36,7 @@ object BridgeEndpoint {
                     normalized.startsWith("fc") || normalized.startsWith("fd")
             )
         ) return true
-        val parts = normalized.split('.').mapNotNull(String::toIntOrNull)
-        if (parts.size != 4 || parts.any { it !in 0..255 }) return false
+        val parts = normalized.ipv4Parts() ?: return false
         return parts[0] == 10 ||
             parts[0] == 127 ||
             (parts[0] == 100 && parts[1] in 64..127) ||
@@ -45,4 +44,15 @@ object BridgeEndpoint {
             (parts[0] == 172 && parts[1] in 16..31) ||
             (parts[0] == 192 && parts[1] == 168)
     }
+
+    private fun String.ipv4Parts(): List<Int>? {
+        val parts = split('.').mapNotNull(String::toIntOrNull)
+        if (parts.size != 4 || parts.any { it !in 0..255 }) return null
+        return parts
+    }
+}
+
+enum class ConnectionRouteMode {
+    SYSTEM,
+    DIRECT_LAN,
 }

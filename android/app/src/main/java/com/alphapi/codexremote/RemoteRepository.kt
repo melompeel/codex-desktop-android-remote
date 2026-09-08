@@ -14,6 +14,8 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,7 +37,7 @@ class RemoteRepository private constructor(context: Context) {
     private val reconnectScheduler = ReconnectScheduler(scope) {
         if (api != null) {
             openStream()
-            runCatching { refreshNow() }.onFailure(::recordError)
+            refreshWithRecovery()
         }
     }
     private var refreshCoordinator: ConflatedRefreshCoordinator? = null
@@ -54,10 +56,22 @@ class RemoteRepository private constructor(context: Context) {
         if (restoreJob?.isActive == true) return
         restoreJob = scope.launch {
             val saved = store.load() ?: return@launch
+            update {
+                it.copy(
+                    configured = true,
+                    taskListLoading = true,
+                    serverUrl = saved.serverUrl,
+                    activeConnectionId = saved.id,
+                    connectionRouteMode = saved.routeMode,
+                    serverAddresses = store.serverAddresses(),
+                )
+            }
             if (api == null) {
-                configure(saved)
-                refresh()
-                openStream()
+                runCatching {
+                    configure(saved)
+                    refresh()
+                    openStream()
+                }.onFailure(::recordError)
             }
             if (startService) startListenerService()
         }
@@ -80,7 +94,7 @@ class RemoteRepository private constructor(context: Context) {
                 configure(saved)
                 openStream()
                 startListenerService()
-                refreshNow()
+                refreshWithRecovery()
             }.onFailure { error -> update { it.copy(error = error.message) } }
             update { it.copy(loading = false) }
         }
@@ -175,6 +189,26 @@ class RemoteRepository private constructor(context: Context) {
         }
     }
 
+    fun setUseSystemRoute(useSystemRoute: Boolean) {
+        val snapshot = mutableState.value
+        val connectionId = snapshot.activeConnectionId.takeIf(String::isNotBlank) ?: return
+        val requested = if (useSystemRoute) {
+            ConnectionRouteMode.SYSTEM
+        } else {
+            ConnectionRouteMode.DIRECT_LAN
+        }
+        scope.launch {
+            update { it.copy(loading = true, error = null) }
+            runCatching {
+                val saved = requireNotNull(store.updateRouteMode(connectionId, requested)) {
+                    "找不到当前终端"
+                }
+                activateConnection(saved)
+            }.onFailure(::recordError)
+            update { it.copy(loading = false) }
+        }
+    }
+
     fun select(threadId: String) {
         cancelMediaLoads()
         markTaskViewed(threadId)
@@ -195,7 +229,7 @@ class RemoteRepository private constructor(context: Context) {
                 requireApi().follow(threadId)
                 followedThreadId = threadId
             }.exceptionOrNull()
-            runCatching { refreshNow() }.onFailure(::recordError)
+            refreshWithRecovery()
             if (followFailure != null) {
                 update {
                     it.copy(error = "桌面未打开此任务，当前只能查看历史记录")
@@ -556,16 +590,22 @@ class RemoteRepository private constructor(context: Context) {
     private fun configure(saved: StoredConnection) {
         refreshCoordinator?.dispose()
         refreshCoordinator = ConflatedRefreshCoordinator(scope) {
-            runCatching { refreshNow() }.onFailure(::recordError)
+            refreshWithRecovery()
         }
-        api = BridgeApi(saved.serverUrl, saved.token)
+        api = BridgeApi(
+            saved.serverUrl,
+            saved.token,
+            ConnectionHttpClientFactory.create(applicationContext, saved.routeMode),
+        )
         mediaCacheKey = "${saved.id}:${saved.deviceId}"
         update {
             it.copy(
                 configured = true,
                 serverUrl = saved.serverUrl,
                 activeConnectionId = saved.id,
+                connectionRouteMode = saved.routeMode,
                 serverAddresses = store.serverAddresses(),
+                taskListLoading = it.tasks.isEmpty(),
                 error = null,
             )
         }
@@ -585,13 +625,15 @@ class RemoteRepository private constructor(context: Context) {
         mutableState.value = RemoteState(
             configured = true,
             loading = true,
+            taskListLoading = true,
             serverUrl = saved.serverUrl,
             activeConnectionId = saved.id,
+            connectionRouteMode = saved.routeMode,
             serverAddresses = store.serverAddresses(),
         )
         configure(saved)
         openStream()
-        refreshNow()
+        refreshWithRecovery()
     }
 
     private fun openStream() {
@@ -606,7 +648,12 @@ class RemoteRepository private constructor(context: Context) {
             },
             onConnected = { connected ->
                 if (generation != streamGeneration) return@stream
-                update { it.copy(connected = connected) }
+                update {
+                    it.copy(
+                        connected = connected,
+                        connectionEstablished = it.connectionEstablished || connected,
+                    )
+                }
                 if (connected) {
                     reconnectScheduler.reset()
                     scheduleRefresh(0)
@@ -620,7 +667,20 @@ class RemoteRepository private constructor(context: Context) {
 
     private suspend fun refreshNow() {
         val bridge = requireApi()
+        if (mutableState.value.tasks.isEmpty()) {
+            update { it.copy(taskListLoading = true) }
+        }
         val health = bridge.health()
+        if (api !== bridge) return
+        update {
+            it.copy(
+                writeSupported = health.compatibility.supported,
+                compatibilityVerified = health.compatibility.verified,
+                ipcConnected = health.ipc == "connected",
+                desktopVersion = health.compatibility.installed,
+                error = null,
+            )
+        }
         val requestedThreadId = mutableState.value.selectedThreadId
         if (
             health.ipc == "connected" &&
@@ -630,21 +690,28 @@ class RemoteRepository private constructor(context: Context) {
             runCatching { bridge.follow(requestedThreadId) }
                 .onSuccess { followedThreadId = requestedThreadId }
         }
-        val capabilities = runCatching { bridge.capabilities() }.getOrDefault(RemoteCapabilitiesDto())
-        val models = runCatching { bridge.models() }.getOrDefault(emptyList())
-        val tasks = bridge.tasks()
-        val approvals = bridge.approvals()
+        val payload = coroutineScope {
+            val capabilities = async {
+                runCatching { bridge.capabilities() }.getOrDefault(RemoteCapabilitiesDto())
+            }
+            val models = async { runCatching { bridge.models() }.getOrDefault(emptyList()) }
+            val tasks = async { bridge.tasks() }
+            val approvals = async { bridge.approvals() }
+            RefreshPayload(
+                capabilities = capabilities.await(),
+                models = models.await(),
+                tasks = tasks.await(),
+                approvals = approvals.await(),
+            )
+        }
         if (api !== bridge) return
-        val completedReviewThreadIds = pendingReviewStore.observe(tasks)
+        val completedReviewThreadIds = pendingReviewStore.observe(payload.tasks)
         val current = mutableState.value
-        val selectedThreadId = current.selectedThreadId
-            ?.takeIf { selected -> tasks.any { it.threadId == selected } }
-            ?: tasks.firstOrNull { it.ownerAvailable }?.threadId
-            ?: tasks.firstOrNull()?.threadId
+        val selectedThreadId = threadIdForDetail(current.selectedThreadId, payload.tasks)
         val detail = selectedThreadId?.let { selected ->
             runCatching { bridge.taskDetail(selected) }.getOrNull()
         }
-        val queue = if (selectedThreadId != null && capabilities.queue) {
+        val queue = if (selectedThreadId != null && payload.capabilities.queue) {
             runCatching { bridge.queue(selectedThreadId) }.getOrNull()
         } else null
         val visibleMediaIds = detail?.items?.mapNotNull { it.media?.mediaId }?.toSet().orEmpty()
@@ -652,17 +719,14 @@ class RemoteRepository private constructor(context: Context) {
         update { current ->
             current.copy(
                 configured = true,
-                tasks = tasks,
+                tasks = payload.tasks,
                 taskDetail = detail,
-                approvals = approvals,
+                approvals = payload.approvals,
                 completedReviewThreadIds = completedReviewThreadIds,
                 selectedThreadId = selectedThreadId,
-                writeSupported = health.compatibility.supported,
-                compatibilityVerified = health.compatibility.verified,
-                ipcConnected = health.ipc == "connected",
-                desktopVersion = health.compatibility.installed,
-                capabilities = capabilities,
-                models = models,
+                capabilities = payload.capabilities,
+                models = payload.models,
+                taskListLoading = false,
                 queueByThread = if (selectedThreadId != null && queue != null) {
                     current.queueByThread + (selectedThreadId to queue.values())
                 } else current.queueByThread,
@@ -678,6 +742,23 @@ class RemoteRepository private constructor(context: Context) {
                 },
                 error = null,
             )
+        }
+    }
+
+    private suspend fun refreshWithRecovery() {
+        try {
+            refreshNow()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            val presentation = refreshFailurePresentation(error, mutableState.value)
+            update {
+                it.copy(
+                    taskListLoading = presentation.shouldRetry && it.tasks.isEmpty(),
+                    error = presentation.message.takeIf { presentation.isError },
+                )
+            }
+            if (presentation.shouldRetry) scheduleRefresh(3_000)
         }
     }
 
@@ -778,6 +859,13 @@ class RemoteRepository private constructor(context: Context) {
 }
 
 private data class LocalAttachmentMetadata(val name: String, val mimeType: String, val size: Long)
+
+private data class RefreshPayload(
+    val capabilities: RemoteCapabilitiesDto,
+    val models: List<ModelOptionDto>,
+    val tasks: List<TaskDto>,
+    val approvals: List<ApprovalDto>,
+)
 
 private fun formatFileSize(size: Long): String = when {
     size >= 1024 * 1024 -> "%.1f MB".format(size / (1024.0 * 1024.0))

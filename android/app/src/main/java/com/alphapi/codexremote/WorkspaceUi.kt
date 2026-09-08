@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -29,6 +30,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -41,6 +43,7 @@ import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -67,6 +70,8 @@ internal fun ProjectDrawerContent(
     onSelect: (String) -> Unit,
     onManageConnections: () -> Unit,
     onCheckUpdates: () -> Unit,
+    useSystemRoute: Boolean = true,
+    onUseSystemRouteChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val allTasks = groups.sumOf { it.tasks.size }
@@ -124,6 +129,31 @@ internal fun ProjectDrawerContent(
             }
         }
         HorizontalDivider(Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("连接路由", style = MaterialTheme.typography.labelLarge)
+                Text(
+                    if (useSystemRoute) "通过系统 VPN / 代理" else "当前终端使用局域网直连",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = useSystemRoute,
+                onCheckedChange = onUseSystemRouteChange,
+                modifier = Modifier.testTag("system-route-switch"),
+            )
+        }
+        Text(
+            "关闭后仅当前终端绕过系统代理和 VPN，直连 Wi-Fi 或有线网络",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 24.dp).padding(bottom = 8.dp),
+        )
+        HorizontalDivider(Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
         NavigationDrawerItem(
             label = { Text("Codex 终端") },
             selected = false,
@@ -169,12 +199,24 @@ internal fun ProjectTaskList(
     groups: List<ProjectGroup>,
     selectedKey: String,
     selectedThreadId: String?,
+    loading: Boolean = false,
     onTaskClick: (TaskDto) -> Unit,
 ) {
     val visibleGroups = remember(groups, selectedKey) { filteredProjectGroups(groups, selectedKey) }
     if (visibleGroups.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("这里还没有任务", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (loading) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(30.dp).testTag("task-list-loading"),
+                        strokeWidth = 3.dp,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text("任务较多，正在继续加载", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                Text("这里还没有任务", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
         return
     }

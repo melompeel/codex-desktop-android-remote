@@ -316,9 +316,12 @@ internal fun CreateTaskResponse.disposition(): TaskCreationDisposition {
 data class RemoteState(
     val configured: Boolean = false,
     val connected: Boolean = false,
+    val connectionEstablished: Boolean = false,
     val loading: Boolean = false,
+    val taskListLoading: Boolean = false,
     val serverUrl: String = "",
     val activeConnectionId: String = "",
+    val connectionRouteMode: ConnectionRouteMode = ConnectionRouteMode.SYSTEM,
     val serverAddresses: List<SavedServerAddress> = emptyList(),
     val tasks: List<TaskDto> = emptyList(),
     val taskDetail: TaskDetailDto? = null,
