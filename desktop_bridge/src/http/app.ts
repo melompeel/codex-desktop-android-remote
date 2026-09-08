@@ -453,6 +453,31 @@ export function createBridgeApp(
     return reply.code(202).send({ ok: true });
   });
 
+  app.post("/v1/tasks/:threadId/activate", async (request, reply) => {
+    const threadId = routeParam(request, "threadId");
+    const body = asRecord(request.body);
+    const device = authenticatedDevice(request);
+    const idempotencyKey =
+      readString(body?.idempotencyKey) ?? requiredRequestId(request);
+    const scope = `${device.deviceId}:activate:${threadId}`;
+    const claim = dependencies.store.beginIdempotent(scope, idempotencyKey);
+    if (claim.replayed) {
+      return reply.code(200).send({
+        ok: true,
+        replayed: true,
+        ...(asRecord(claim.result) ?? {}),
+      });
+    }
+    try {
+      const result = await dependencies.controller.activateTask(threadId);
+      dependencies.store.completeIdempotent(scope, idempotencyKey, result);
+      return reply.code(200).send({ ok: true, ...result });
+    } catch (error) {
+      dependencies.store.releaseIdempotent(scope, idempotencyKey);
+      throw error;
+    }
+  });
+
   app.post("/v1/tasks/:threadId/messages", async (request, reply) => {
     const threadId = routeParam(request, "threadId");
     const body = asRecord(request.body);

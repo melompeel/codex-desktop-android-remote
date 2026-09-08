@@ -38,6 +38,40 @@ class ConversationPaneTest {
     val compose = createAndroidComposeRule<ComponentActivity>()
 
     @Test
+    fun showsDesktopActivationProgressForASelectedHistoricalTask() {
+        compose.setContent {
+            MaterialTheme {
+                TaskConversationPane(
+                    task = TaskDto("history", "History", "idle", 1, 0, false),
+                    detail = TaskDetailDto("history", "History", "idle", 1),
+                    canWrite = false,
+                    activating = true,
+                    draft = "",
+                    deliveryMode = DeliveryMode.START,
+                    queued = emptyList(),
+                    queueReady = false,
+                    attachments = emptyList(),
+                    models = emptyList(),
+                    capabilities = RemoteCapabilitiesDto(taskActivation = true),
+                    sending = false,
+                    stopping = false,
+                    onDraftChange = {},
+                    onDeliveryChange = {},
+                    onSend = {},
+                    onStop = {},
+                    onCancelQueued = {},
+                    onOpenSettings = {},
+                    onAttachmentsSelected = {},
+                    onRemoveAttachment = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("正在电脑端载入此对话", substring = true).assertIsDisplayed()
+        compose.onAllNodesWithText("当前只能查看历史记录", substring = true).assertCountEquals(0)
+    }
+
+    @Test
     fun systemBackReturnsFromConversationToTaskList() {
         var detailOpen by mutableStateOf(true)
         compose.setContent {

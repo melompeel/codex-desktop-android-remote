@@ -12,13 +12,14 @@ class BridgeContractTest {
     @Test
     fun decodesCapabilitiesWithoutInventingUnavailableTaskCreation() {
         val response = json.decodeFromString<CapabilitiesResponse>(
-            """{"capabilities":{"apiVersion":"v1","writable":true,"taskCreation":false,"deliveries":["auto","start","steer","queue"],"queue":true,"modelSettings":true,"diff":true,"attachments":{"enabled":true,"kinds":["image","file"],"queued":false,"maxBytes":10485760}}}""",
+            """{"capabilities":{"apiVersion":"v1","writable":true,"taskCreation":false,"taskActivation":true,"deliveries":["auto","start","steer","queue"],"queue":true,"modelSettings":true,"diff":true,"attachments":{"enabled":true,"kinds":["image","file"],"queued":false,"maxBytes":10485760}}}""",
         )
 
         assertTrue(response.capabilities.explicitDelivery)
         assertTrue(response.capabilities.attachments.enabled)
         assertEquals(10_485_760L, response.capabilities.maxAttachmentBytes)
         assertFalse(response.capabilities.newTask)
+        assertTrue(response.capabilities.taskActivation)
     }
 
     @Test

@@ -210,6 +210,12 @@ class RemoteRepository private constructor(context: Context) {
     }
 
     fun select(threadId: String) {
+        val snapshot = mutableState.value
+        val openAction = taskOpenAction(
+            task = snapshot.tasks.firstOrNull { it.threadId == threadId },
+            capabilities = snapshot.capabilities,
+            activationInProgress = threadId in snapshot.activatingThreads,
+        )
         cancelMediaLoads()
         markTaskViewed(threadId)
         update {
@@ -221,21 +227,47 @@ class RemoteRepository private constructor(context: Context) {
                 failedTaskMediaIds = emptySet(),
                 workspaceFiles = emptyList(),
                 workspaceFilesLoading = false,
+                activatingThreads = if (openAction == TaskOpenAction.ACTIVATE) {
+                    it.activatingThreads + threadId
+                } else {
+                    it.activatingThreads
+                },
             )
         }
+        if (openAction == TaskOpenAction.WAIT) return
         scope.launch {
             update { it.copy(loading = true, error = null) }
-            val followFailure = runCatching {
-                requireApi().follow(threadId)
-                followedThreadId = threadId
-            }.exceptionOrNull()
-            refreshWithRecovery()
-            if (followFailure != null) {
+            try {
+                if (openAction == TaskOpenAction.ACTIVATE) refresh()
+                val openFailure = runCatching {
+                    val bridge = requireApi()
+                    if (openAction == TaskOpenAction.ACTIVATE) {
+                        bridge.activateTask(threadId)
+                    } else {
+                        bridge.follow(threadId)
+                    }
+                    followedThreadId = threadId
+                }.exceptionOrNull()
+                refreshWithRecovery()
+                if (openFailure != null) {
+                    update {
+                        it.copy(
+                            error = if (openAction == TaskOpenAction.ACTIVATE) {
+                                "无法在电脑端载入此对话，当前仍可查看历史记录"
+                            } else {
+                                "桌面未打开此任务，当前只能查看历史记录"
+                            },
+                        )
+                    }
+                }
+            } finally {
                 update {
-                    it.copy(error = "桌面未打开此任务，当前只能查看历史记录")
+                    it.copy(
+                        loading = false,
+                        activatingThreads = it.activatingThreads - threadId,
+                    )
                 }
             }
-            update { it.copy(loading = false) }
         }
     }
 

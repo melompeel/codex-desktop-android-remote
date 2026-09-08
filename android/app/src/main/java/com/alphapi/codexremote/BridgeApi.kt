@@ -68,6 +68,13 @@ class BridgeApi(
         execute<Unit>("POST", "/v1/tasks/$threadId/follow", "{}") { }
     }
 
+    suspend fun activateTask(threadId: String) {
+        val body = json.encodeToString(
+            buildJsonObject { put("idempotencyKey", UUID.randomUUID().toString()) },
+        )
+        execute<Unit>("POST", "/v1/tasks/$threadId/activate", body) { }
+    }
+
     suspend fun taskDetail(threadId: String): TaskDetailDto =
         execute("GET", "/v1/tasks/$threadId") { response ->
             json.decodeFromString<TaskDetailResponse>(response.body!!.string()).task

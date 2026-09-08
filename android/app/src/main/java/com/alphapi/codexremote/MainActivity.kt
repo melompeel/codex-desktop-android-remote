@@ -218,7 +218,7 @@ private fun RemoteHome(
         if (showNewTask || settingsThreadId != null) repository.refreshModels()
     }
     var diffThreadId by remember { mutableStateOf<String?>(null) }
-    var selectedProjectKey by rememberSaveable { mutableStateOf(ProjectGroup.ALL_KEY) }
+    var selectedProjectKey by rememberSaveable { mutableStateOf(OPEN_TASKS_KEY) }
     val groups = remember(state.tasks) { groupTasksByProject(state.tasks) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -230,7 +230,7 @@ private fun RemoteHome(
         state.connected && state.ipcConnected
     val selectedProjectName = when (selectedProjectKey) {
         ProjectGroup.ALL_KEY -> "所有任务"
-        OPEN_TASKS_KEY -> "桌面已打开"
+        OPEN_TASKS_KEY -> "最近任务"
         else -> groups.firstOrNull { it.key == selectedProjectKey }?.name ?: "所有任务"
     }
 
@@ -797,6 +797,7 @@ private fun TasksPane(
         task = selected,
         detail = state.taskDetail?.takeIf { it.threadId == selected.threadId },
         canWrite = canWrite,
+        activating = selected.threadId in state.activatingThreads,
         draft = state.draftsByThread[selected.threadId].orEmpty(),
         deliveryMode = state.deliveryByThread[selected.threadId] ?: defaultDeliveryFor(selected.status),
         queued = state.queueByThread[selected.threadId].orEmpty(),

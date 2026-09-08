@@ -92,17 +92,17 @@ internal fun ProjectDrawerContent(
             modifier = Modifier.padding(horizontal = 24.dp).padding(bottom = 12.dp),
         )
         NavigationDrawerItem(
+            label = { DrawerLabel("最近任务", openTasks) },
+            selected = selectedKey == OPEN_TASKS_KEY,
+            onClick = { onSelect(OPEN_TASKS_KEY) },
+            icon = { Icon(Icons.Default.LaptopWindows, null) },
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        NavigationDrawerItem(
             label = { DrawerLabel("所有任务", allTasks) },
             selected = selectedKey == ProjectGroup.ALL_KEY,
             onClick = { onSelect(ProjectGroup.ALL_KEY) },
             icon = { Icon(Icons.Default.History, null) },
-            modifier = Modifier.padding(horizontal = 12.dp),
-        )
-        NavigationDrawerItem(
-            label = { DrawerLabel("桌面已打开", openTasks) },
-            selected = selectedKey == OPEN_TASKS_KEY,
-            onClick = { onSelect(OPEN_TASKS_KEY) },
-            icon = { Icon(Icons.Default.LaptopWindows, null) },
             modifier = Modifier.padding(horizontal = 12.dp),
         )
         HorizontalDivider(Modifier.padding(horizontal = 20.dp, vertical = 10.dp))
@@ -130,30 +130,16 @@ internal fun ProjectDrawerContent(
         }
         HorizontalDivider(Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(Modifier.weight(1f)) {
-                Text("连接路由", style = MaterialTheme.typography.labelLarge)
-                Text(
-                    if (useSystemRoute) "通过系统 VPN / 代理" else "当前终端使用局域网直连",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            Text("通过VPN/代理", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
             Switch(
                 checked = useSystemRoute,
                 onCheckedChange = onUseSystemRouteChange,
                 modifier = Modifier.testTag("system-route-switch"),
             )
         }
-        Text(
-            "关闭后仅当前终端绕过系统代理和 VPN，直连 Wi-Fi 或有线网络",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 24.dp).padding(bottom = 8.dp),
-        )
-        HorizontalDivider(Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
         NavigationDrawerItem(
             label = { Text("Codex 终端") },
             selected = false,
@@ -250,14 +236,31 @@ internal fun ProjectTaskList(
                     shape = MaterialTheme.shapes.small,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Column(Modifier.padding(12.dp)) {
-                        Text(task.title, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        val availability = if (task.ownerAvailable) "桌面已打开" else "历史"
-                        Text(
-                            "$availability  ·  ${statusLabel(task.status)}  ·  待确认 ${task.pendingApprovals}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(task.title, fontWeight = FontWeight.Medium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            val availability = if (task.ownerAvailable) "桌面已打开" else "历史"
+                            Text(
+                                "$availability  ·  ${statusLabel(task.status)}  ·  待确认 ${task.pendingApprovals}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Box(
+                            modifier = Modifier.size(28.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (isActiveTaskStatus(task.status)) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(22.dp)
+                                        .testTag("task-running:${task.threadId}"),
+                                    strokeWidth = 2.5.dp,
+                                )
+                            }
+                        }
                     }
                 }
             }

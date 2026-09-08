@@ -10,7 +10,7 @@
     <RootNamespace>CodexRemoteManager</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>app.ico</ApplicationIcon>
-    <Version>0.4.6</Version>
+    <Version>0.4.8</Version>
   </PropertyGroup>
   <ItemGroup>
     <Content Include="app.ico" CopyToOutputDirectory="PreserveNewest" />

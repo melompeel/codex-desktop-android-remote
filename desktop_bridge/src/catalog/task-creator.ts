@@ -149,7 +149,7 @@ export function codexThreadUrl(threadId: string): string {
   return `codex://threads/${encodeURIComponent(threadId)}?follow=${randomUUID()}`;
 }
 
-async function activateCodexThread(url: string): Promise<void> {
+export async function activateCodexThread(url: string): Promise<void> {
   if (process.platform !== "win32") throw new Error("desktop-activation-unsupported");
   await execFileAsync("explorer.exe", [url], { windowsHide: true, timeout: 10_000 });
 }

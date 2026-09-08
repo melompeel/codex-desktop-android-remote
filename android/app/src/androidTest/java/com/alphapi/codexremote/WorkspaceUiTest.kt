@@ -6,10 +6,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -24,6 +26,33 @@ import org.junit.Assert.assertTrue
 class WorkspaceUiTest {
     @get:Rule
     val compose = createComposeRule()
+
+    @Test
+    fun showsAStableRunningIndicatorOnlyForActiveTasks() {
+        compose.setContent {
+            MaterialTheme {
+                ProjectTaskList(
+                    groups = listOf(
+                        ProjectGroup(
+                            key = "project",
+                            name = "Project",
+                            cwd = "C:\\Project",
+                            tasks = listOf(
+                                TaskDto("active", "运行中", "active", 1, 0, true),
+                                TaskDto("idle", "已完成", "idle", 1, 0, true),
+                            ),
+                        ),
+                    ),
+                    selectedKey = ProjectGroup.ALL_KEY,
+                    selectedThreadId = null,
+                    onTaskClick = {},
+                )
+            }
+        }
+
+        compose.onNodeWithTag("task-running:active").assertIsDisplayed()
+        compose.onAllNodesWithTag("task-running:idle").assertCountEquals(0)
+    }
 
     @Test
     fun showsTheUserSelectedLanRouteInTheDrawer() {
@@ -41,8 +70,9 @@ class WorkspaceUiTest {
             }
         }
 
-        compose.onNodeWithText("当前终端使用局域网直连").assertIsDisplayed()
-        compose.onNodeWithTag("system-route-switch").assertIsDisplayed()
+        compose.onNodeWithText("通过VPN/代理").assertIsDisplayed()
+        compose.onNodeWithTag("system-route-switch").assertIsDisplayed().assertIsOff()
+        compose.onAllNodesWithText("关闭后仅当前终端", substring = true).assertCountEquals(0)
     }
 
     @Test
@@ -61,8 +91,28 @@ class WorkspaceUiTest {
             }
         }
 
-        compose.onNodeWithText("通过系统 VPN / 代理").assertIsDisplayed()
+        compose.onNodeWithText("通过VPN/代理").assertIsDisplayed()
         compose.onNodeWithTag("system-route-switch").assertIsEnabled()
+    }
+
+    @Test
+    fun placesRecentTasksBeforeAllTasks() {
+        compose.setContent {
+            MaterialTheme {
+                ProjectDrawerContent(
+                    groups = emptyList(),
+                    selectedKey = OPEN_TASKS_KEY,
+                    activeServerUrl = "http://192.168.1.20:8766",
+                    onSelect = {},
+                    onManageConnections = {},
+                    onCheckUpdates = {},
+                )
+            }
+        }
+
+        val recent = compose.onNodeWithText("最近任务").fetchSemanticsNode().boundsInRoot
+        val all = compose.onNodeWithText("所有任务").fetchSemanticsNode().boundsInRoot
+        assertTrue("Recent tasks should appear first", recent.top < all.top)
     }
 
     @Test

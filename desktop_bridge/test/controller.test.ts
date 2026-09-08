@@ -318,6 +318,98 @@ describe("BridgeController", () => {
     expect(control.calls.some(([name]) => name === "startTurn")).toBe(false);
   });
 
+  it("activates one known historical task and waits for the Desktop owner", async () => {
+    const store = new BridgeStore();
+    const control = new FakeControl({ history: 1 });
+    const activated: string[] = [];
+    const controller = new BridgeController(
+      control,
+      store,
+      {
+        async listThreads() { return []; },
+        async readThread(threadId) {
+          return threadId === "01a0705b-c5c1-7d00-95bc-efd02a96789b"
+            ? { id: threadId, status: "idle" }
+            : null;
+        },
+      },
+      undefined,
+      {
+        timeoutMs: 2,
+        pollIntervalMs: 1,
+        sleep: async () => undefined,
+        activateThread: async (threadId) => { activated.push(threadId); },
+      },
+    );
+
+    expect(controller.capabilities).toMatchObject({ taskActivation: true });
+    await expect(
+      controller.activateTask("01a0705b-c5c1-7d00-95bc-efd02a96789b"),
+    ).resolves.toEqual({ ownerAvailable: true, alreadyOpen: false });
+
+    expect(activated).toEqual(["01a0705b-c5c1-7d00-95bc-efd02a96789b"]);
+    expect(control.calls).toEqual([
+      ["loadHistory", "01a0705b-c5c1-7d00-95bc-efd02a96789b"],
+      ["loadHistory", "01a0705b-c5c1-7d00-95bc-efd02a96789b"],
+    ]);
+    expect(store.eventsAfter(0)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "task.activation_requested" }),
+      expect.objectContaining({ type: "task.activated" }),
+    ]));
+  });
+
+  it("rejects an unknown historical task before invoking the Desktop deep link", async () => {
+    const activated: string[] = [];
+    const controller = new BridgeController(
+      new FakeControl(),
+      new BridgeStore(),
+      {
+        async listThreads() { return []; },
+        async readThread() { return null; },
+      },
+      undefined,
+      {
+        activateThread: async (threadId) => { activated.push(threadId); },
+      },
+    );
+
+    await expect(controller.activateTask("unknown-thread"))
+      .rejects.toThrow("task-detail-not-found");
+    expect(activated).toEqual([]);
+  });
+
+  it("coalesces repeated activation requests for the same task", async () => {
+    let releaseActivation = () => {};
+    const gate = new Promise<void>((resolve) => { releaseActivation = resolve; });
+    const activated: string[] = [];
+    const controller = new BridgeController(
+      new FakeControl(),
+      new BridgeStore(),
+      {
+        async listThreads() { return []; },
+        async readThread(threadId) { return { id: threadId, status: "idle" }; },
+      },
+      undefined,
+      {
+        activateThread: async (threadId) => {
+          activated.push(threadId);
+          await gate;
+        },
+      },
+    );
+
+    const first = controller.activateTask("01a0705b-c5c1-7d00-95bc-efd02a96789b");
+    const second = controller.activateTask("01a0705b-c5c1-7d00-95bc-efd02a96789b");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(activated).toHaveLength(1);
+    releaseActivation();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { ownerAvailable: true, alreadyOpen: false },
+      { ownerAvailable: true, alreadyOpen: false },
+    ]);
+  });
+
   it("turns a push request into a fixed Codex instruction", async () => {
     const store = new BridgeStore();
     const control = new FakeControl();

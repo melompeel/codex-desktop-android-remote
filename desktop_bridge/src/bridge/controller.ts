@@ -162,13 +162,21 @@ export type OwnerHandoffOptions = {
   timeoutMs?: number;
   pollIntervalMs?: number;
   sleep?: (milliseconds: number) => Promise<void>;
+  activateThread?: (threadId: string) => Promise<void>;
+};
+
+export type TaskActivationResult = {
+  ownerAvailable: true;
+  alreadyOpen: boolean;
 };
 
 export class BridgeController {
   private readonly autoFollowInFlight = new Set<string>();
+  private readonly activationInFlight = new Map<string, Promise<TaskActivationResult>>();
   private readonly ownerHandoffTimeoutMs: number;
   private readonly ownerHandoffPollIntervalMs: number;
   private readonly sleep: (milliseconds: number) => Promise<void>;
+  private readonly activateThread: ((threadId: string) => Promise<void>) | undefined;
 
   constructor(
     private readonly control: CodexControlPort,
@@ -181,6 +189,7 @@ export class BridgeController {
     this.ownerHandoffPollIntervalMs = ownerHandoff.pollIntervalMs ?? 250;
     this.sleep = ownerHandoff.sleep ?? ((milliseconds) =>
       new Promise((resolve) => setTimeout(resolve, milliseconds)));
+    this.activateThread = ownerHandoff.activateThread;
     if (
       this.ownerHandoffTimeoutMs <= 0 ||
       this.ownerHandoffPollIntervalMs <= 0
@@ -198,6 +207,9 @@ export class BridgeController {
       apiVersion: "v1",
       writable: this.control.writable,
       taskCreation: this.control.writable && Boolean(this.taskCreator),
+      taskActivation: this.control.writable && Boolean(
+        this.activateThread && this.catalog?.readThread,
+      ),
       deliveries: ["auto", "start", "steer", "queue"],
       queue: Boolean(this.control.setQueuedFollowUps),
       modelSettings: Boolean(this.control.updateThreadSettings && this.catalog?.listModels),
@@ -411,6 +423,27 @@ export class BridgeController {
 
   async follow(threadId: string): Promise<void> {
     await this.control.loadHistory(threadId);
+  }
+
+  async activateTask(threadId: string): Promise<TaskActivationResult> {
+    if (this.store.getThread(threadId)) {
+      return { ownerAvailable: true, alreadyOpen: true };
+    }
+    if (!this.control.writable || !this.activateThread || !this.catalog?.readThread) {
+      throw new Error("task-activation-unavailable");
+    }
+    const existing = this.activationInFlight.get(threadId);
+    if (existing) return existing;
+
+    const activation = this.activateHistoricalTask(threadId);
+    this.activationInFlight.set(threadId, activation);
+    try {
+      return await activation;
+    } finally {
+      if (this.activationInFlight.get(threadId) === activation) {
+        this.activationInFlight.delete(threadId);
+      }
+    }
   }
 
   async restoreFollowing(): Promise<void> {
@@ -657,6 +690,26 @@ export class BridgeController {
       }
     }
     throw new Error(`task-owner-handoff-timeout:${errorMessage(lastError)}`);
+  }
+
+  private async activateHistoricalTask(threadId: string): Promise<TaskActivationResult> {
+    const history = await this.catalog!.readThread!(threadId);
+    if (!history) throw new Error("task-detail-not-found");
+    this.store.appendEvent("task.activation_requested", {}, threadId);
+    try {
+      await this.activateThread!(threadId);
+      await this.waitForDesktopOwner(threadId);
+      const result = { ownerAvailable: true, alreadyOpen: false } as const;
+      this.store.appendEvent("task.activated", result, threadId);
+      return result;
+    } catch (error) {
+      this.store.appendEvent(
+        "task.activation_failed",
+        { error: errorMessage(error) },
+        threadId,
+      );
+      throw error;
+    }
   }
 
   private autoFollow(threadId: string): void {

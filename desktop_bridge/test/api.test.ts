@@ -190,6 +190,62 @@ describe("Bridge HTTP API", () => {
     expect(control.calls.filter(([name]) => name === "startTurn")).toHaveLength(1);
   });
 
+  it("activates a historical task once for signed idempotent requests", async () => {
+    const activated: string[] = [];
+    const catalog: TaskCatalogPort = {
+      async listThreads() { return []; },
+      async readThread(threadId) { return { id: threadId, status: "idle" }; },
+    };
+    const { app, registry } = setup(
+      undefined,
+      undefined,
+      catalog,
+      undefined,
+      {
+        activateThread: async (threadId) => { activated.push(threadId); },
+      },
+    );
+    const token = (await registry.issue("device-activate", "Pixel", "android")).token;
+    const capabilityPath = "/v1/capabilities";
+    const capabilities = await app.inject({
+      method: "GET",
+      url: capabilityPath,
+      headers: signedHeaders(token, "GET", capabilityPath, "", "activate-capability"),
+    });
+    expect(capabilities.json()).toMatchObject({ capabilities: { taskActivation: true } });
+
+    const path = "/v1/tasks/01a0705b-c5c1-7d00-95bc-efd02a96789b/activate";
+    const body = JSON.stringify({ idempotencyKey: "activate-history-1" });
+    const first = await app.inject({
+      method: "POST",
+      url: path,
+      headers: {
+        ...signedHeaders(token, "POST", path, body, "activate-request-1"),
+        "content-type": "application/json",
+      },
+      payload: body,
+    });
+    const replay = await app.inject({
+      method: "POST",
+      url: path,
+      headers: {
+        ...signedHeaders(token, "POST", path, body, "activate-request-2"),
+        "content-type": "application/json",
+      },
+      payload: body,
+    });
+
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toMatchObject({
+      ok: true,
+      ownerAvailable: true,
+      alreadyOpen: false,
+    });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toMatchObject({ ok: true, replayed: true });
+    expect(activated).toEqual(["01a0705b-c5c1-7d00-95bc-efd02a96789b"]);
+  });
+
   it("uploads a signed attachment and sends its managed local path", async () => {
     const root = await mkdtemp(join(tmpdir(), "codex-remote-api-"));
     temporaryRoots.push(root);

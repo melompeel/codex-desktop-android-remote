@@ -9,7 +9,9 @@ import {
 } from "./asr/whisper.js";
 import { AppServerCatalog } from "./catalog/app-server.js";
 import {
+  activateCodexThread,
   AppServerTaskCreator,
+  codexThreadUrl,
   openStdioAppServer,
 } from "./catalog/task-creator.js";
 import { BridgeStore } from "./domain/store.js";
@@ -55,6 +57,9 @@ const controller = new BridgeController(
   store,
   catalog,
   taskCreator,
+  {
+    activateThread: (threadId) => activateCodexThread(codexThreadUrl(threadId)),
+  },
 );
 const registry = await FileDeviceRegistry.open(join(dataRoot, "devices.json"));
 const pairing = new PairingService(registry, process.env.BRIDGE_PAIRING_CODE);

@@ -35,6 +35,8 @@ socket peer is `127.0.0.1` or `::1`; proxy headers are ignored:
 
 `GET /v1/capabilities` returns `{ "capabilities": { ... } }`. `taskCreation` is true
 when the known Desktop protocol operations and safe task materializer are available.
+`taskActivation` is true when the Bridge can validate a historical task and ask Windows
+to open it in Codex Desktop.
 Attachments report `image` and `file`, a 10 MiB limit, and `queued: false`.
 
 `GET /v1/models` returns `{ "models": [...] }`. Model rows use the Desktop app-server
@@ -82,6 +84,18 @@ Task summaries and `GET /v1/tasks/:threadId` may include:
 
 Task summaries also include `updatedAt` in Unix milliseconds when the Desktop
 provides it, allowing clients to detect work completed while disconnected.
+
+`POST /v1/tasks/:threadId/activate` accepts a stable `idempotencyKey`. The Bridge first
+confirms that the task exists in the local catalog, opens only the validated
+`codex://threads/:threadId` deep link, and waits for Codex Desktop to become owner.
+Concurrent activation attempts for the same task are coalesced. A successful response is:
+
+```json
+{ "ok": true, "ownerAvailable": true, "alreadyOpen": false }
+```
+
+The endpoint never accepts an arbitrary URL. Owner handoff timeout leaves the catalog
+history readable and returns a service-unavailable error.
 
 Timeline `ImageView` entries and assistant Markdown images use `kind: "image"`; images attached to
 user messages use `kind: "userImage"`. Both include an opaque `mediaId`.

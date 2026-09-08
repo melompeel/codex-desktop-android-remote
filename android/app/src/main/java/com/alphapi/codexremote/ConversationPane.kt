@@ -111,6 +111,7 @@ internal fun TaskConversationPane(
     task: TaskDto,
     detail: TaskDetailDto?,
     canWrite: Boolean,
+    activating: Boolean = false,
     draft: String,
     deliveryMode: DeliveryMode,
     queued: List<QueuedFollowUpDto>,
@@ -154,7 +155,13 @@ internal fun TaskConversationPane(
 
     Column(Modifier.fillMaxSize()) {
         if (!task.ownerAvailable) {
-            ConnectionBanner("桌面未打开此任务，当前只能查看历史记录")
+            ConnectionBanner(
+                if (activating) {
+                    "正在电脑端载入此对话，完成后即可继续输入"
+                } else {
+                    "桌面未打开此任务，当前只能查看历史记录"
+                },
+            )
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
