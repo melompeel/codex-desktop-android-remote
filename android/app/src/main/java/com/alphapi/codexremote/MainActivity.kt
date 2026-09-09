@@ -39,12 +39,15 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Difference
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -212,6 +215,7 @@ private fun RemoteHome(
     var detailOpen by rememberSaveable { mutableStateOf(false) }
     var confirmDisconnect by remember { mutableStateOf(false) }
     var showConnections by remember { mutableStateOf(false) }
+    var showAbout by remember { mutableStateOf(false) }
     var showUpdates by remember { mutableStateOf(false) }
     var updateState by remember { mutableStateOf<UpdateState>(UpdateState.Idle) }
     var confirmPush by remember { mutableStateOf(false) }
@@ -313,32 +317,12 @@ private fun RemoteHome(
                     scope.launch { drawerState.close() }
                     showConnections = true
                 },
-                onCheckUpdates = {
+                onAbout = {
                     scope.launch { drawerState.close() }
-                    showUpdates = true
-                    updateState = UpdateState.Checking
-                    scope.launch { updateState = updater.check() }
+                    showAbout = true
                 },
                 useSystemRoute = state.connectionRouteMode == ConnectionRouteMode.SYSTEM,
                 onUseSystemRouteChange = repository::setUseSystemRoute,
-                onOpenAuthorEmail = {
-                    runCatching {
-                        context.startActivity(
-                            Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:wmelonpeel@gmail.com")),
-                        )
-                    }.onFailure {
-                        Toast.makeText(context, "没有找到可用的邮件应用", Toast.LENGTH_SHORT).show()
-                    }
-                },
-                onOpenSource = {
-                    runCatching {
-                        context.startActivity(
-                            Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/melompeel/codex-desktop-remote")),
-                        )
-                    }.onFailure {
-                        Toast.makeText(context, "没有找到可用的浏览器", Toast.LENGTH_SHORT).show()
-                    }
-                },
             )
         },
     ) {
@@ -464,6 +448,35 @@ private fun RemoteHome(
             }
         }
     }
+    if (showAbout) {
+        AboutDialog(
+            onDismiss = { showAbout = false },
+            onCheckUpdates = {
+                showAbout = false
+                showUpdates = true
+                updateState = UpdateState.Checking
+                scope.launch { updateState = updater.check() }
+            },
+            onOpenAuthorEmail = {
+                runCatching {
+                    context.startActivity(
+                        Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:wmelonpeel@gmail.com")),
+                    )
+                }.onFailure {
+                    Toast.makeText(context, "没有找到可用的邮件应用", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onOpenSource = {
+                runCatching {
+                    context.startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/melompeel/codex-desktop-remote")),
+                    )
+                }.onFailure {
+                    Toast.makeText(context, "没有找到可用的浏览器", Toast.LENGTH_SHORT).show()
+                }
+            },
+        )
+    }
     if (showConnections) {
         ConnectionManagerDialog(
             state = state,
@@ -496,6 +509,11 @@ private fun RemoteHome(
                 } catch (error: Exception) {
                     UpdateState.Error(error.message ?: "无法启动后台下载")
                 }
+            },
+            onCancelDownload = { downloading ->
+                updater.cancelDownload(downloading.downloadId)
+                updateState = UpdateState.Checking
+                scope.launch { updateState = updater.check() }
             },
             onInstall = { ready ->
                 updater.install(ready.downloadId)
@@ -584,11 +602,75 @@ internal fun RemoteBackNavigation(
 }
 
 @Composable
+internal fun AboutDialog(
+    onDismiss: () -> Unit,
+    onCheckUpdates: () -> Unit,
+    onOpenAuthorEmail: () -> Unit,
+    onOpenSource: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("关于") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column {
+                    Text("Codex Desktop Remote", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "当前版本 ${BuildConfig.VERSION_NAME}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                HorizontalDivider()
+                Button(onClick = onCheckUpdates, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.SystemUpdate, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("检查更新")
+                }
+                OutlinedButton(onClick = onOpenAuthorEmail, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.Email, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("作者邮箱")
+                        Text(
+                            "wmelonpeel@gmail.com",
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                OutlinedButton(onClick = onOpenSource, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.Code, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("开源项目")
+                        Text(
+                            "github.com/melompeel/codex-desktop-remote",
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
+        },
+    )
+}
+
+internal fun updateDialogConfirmLabel(state: UpdateState): String =
+    if (state is UpdateState.Downloading) "后台下载" else "确认"
+
+@Composable
 private fun AppUpdateDialog(
     state: UpdateState,
     onDismiss: () -> Unit,
     onRetry: () -> Unit,
     onDownload: (AppUpdate) -> Unit,
+    onCancelDownload: (UpdateState.Downloading) -> Unit,
     onInstall: (UpdateState.ReadyToInstall) -> Unit,
 ) {
     AlertDialog(
@@ -643,12 +725,18 @@ private fun AppUpdateDialog(
                 is UpdateState.Available -> Button(onClick = { onDownload(state.update) }) { Text("下载并安装") }
                 is UpdateState.ReadyToInstall -> Button(onClick = { onInstall(state) }) { Text("继续安装") }
                 is UpdateState.Error -> Button(onClick = onRetry) { Text("重试") }
-                else -> TextButton(onClick = onDismiss) { Text("关闭") }
+                else -> TextButton(onClick = onDismiss) { Text(updateDialogConfirmLabel(state)) }
             }
         },
         dismissButton = {
-            if (state is UpdateState.Available || state is UpdateState.ReadyToInstall || state is UpdateState.Error) {
-                TextButton(onClick = onDismiss) { Text("稍后") }
+            when (state) {
+                is UpdateState.Downloading -> {
+                    TextButton(onClick = { onCancelDownload(state) }) { Text("取消下载") }
+                }
+                is UpdateState.Available, is UpdateState.ReadyToInstall, is UpdateState.Error -> {
+                    TextButton(onClick = onDismiss) { Text("稍后") }
+                }
+                else -> Unit
             }
         },
     )

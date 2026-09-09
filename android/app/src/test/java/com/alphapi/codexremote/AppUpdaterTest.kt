@@ -35,4 +35,55 @@ class AppUpdaterTest {
         assertEquals("codex-desktop-remote-0.4.2.apk", updateApkFileName("v0.4.2"))
         assertEquals("codex-desktop-remote-update.apk", updateApkFileName("preview"))
     }
+
+    @Test
+    fun newerReleaseSupersedesAnOlderActiveDownload() {
+        val oldUpdate = update("0.5.2")
+        val latestUpdate = update("0.5.3")
+
+        val result = resolveCheckedUpdateState(
+            currentVersion = "0.5.1",
+            latestUpdate = latestUpdate,
+            storedState = UpdateState.Downloading(oldUpdate, 188L),
+        )
+
+        assertEquals(UpdateState.Available(latestUpdate), result)
+    }
+
+    @Test
+    fun matchingReleaseKeepsAnActiveOrDownloadedUpdate() {
+        val latestUpdate = update("0.5.3")
+        val downloading = UpdateState.Downloading(latestUpdate, 189L)
+        val ready = UpdateState.ReadyToInstall(latestUpdate, 189L)
+
+        assertEquals(
+            downloading,
+            resolveCheckedUpdateState("0.5.1", latestUpdate, downloading),
+        )
+        assertEquals(
+            ready,
+            resolveCheckedUpdateState("0.5.1", latestUpdate, ready),
+        )
+    }
+
+    @Test
+    fun currentAppDoesNotOfferAnOlderRelease() {
+        assertEquals(
+            UpdateState.Current,
+            resolveCheckedUpdateState("0.5.3", update("0.5.2"), null),
+        )
+    }
+
+    @Test
+    fun currentUpdateDialogUsesAConfirmationLabel() {
+        assertEquals("确认", updateDialogConfirmLabel(UpdateState.Current))
+        assertEquals("后台下载", updateDialogConfirmLabel(UpdateState.Downloading(update("0.5.3"), 190L)))
+    }
+
+    private fun update(version: String) = AppUpdate(
+        version = version,
+        apkUrl = "https://example.invalid/$version.apk",
+        releasePageUrl = "https://example.invalid/$version",
+        notes = "",
+    )
 }

@@ -83,7 +83,7 @@ class WorkspaceUiTest {
                     activeServerUrl = "http://192.168.1.20:8766",
                     onSelect = {},
                     onManageConnections = {},
-                    onCheckUpdates = {},
+                    onAbout = {},
                     useSystemRoute = false,
                 )
             }
@@ -104,7 +104,7 @@ class WorkspaceUiTest {
                     activeServerUrl = "http://100.104.36.62:8766",
                     onSelect = {},
                     onManageConnections = {},
-                    onCheckUpdates = {},
+                    onAbout = {},
                     useSystemRoute = true,
                 )
             }
@@ -124,7 +124,7 @@ class WorkspaceUiTest {
                     activeServerUrl = "http://192.168.1.20:8766",
                     onSelect = {},
                     onManageConnections = {},
-                    onCheckUpdates = {},
+                    onAbout = {},
                 )
             }
         }
@@ -132,6 +132,56 @@ class WorkspaceUiTest {
         val recent = compose.onNodeWithText("最近任务").fetchSemanticsNode().boundsInRoot
         val all = compose.onNodeWithText("所有任务").fetchSemanticsNode().boundsInRoot
         assertTrue("Recent tasks should appear first", recent.top < all.top)
+    }
+
+    @Test
+    fun keepsUpdateAndProjectLinksInsideAbout() {
+        var opened = false
+        compose.setContent {
+            MaterialTheme {
+                ProjectDrawerContent(
+                    groups = emptyList(),
+                    selectedKey = OPEN_TASKS_KEY,
+                    activeServerUrl = "http://192.168.1.20:8766",
+                    onSelect = {},
+                    onManageConnections = {},
+                    onAbout = { opened = true },
+                )
+            }
+        }
+
+        compose.onNodeWithText("关于").assertIsDisplayed().performClick()
+        compose.onAllNodesWithText("检查更新").assertCountEquals(0)
+        compose.onAllNodesWithText("作者邮箱").assertCountEquals(0)
+        compose.onAllNodesWithText("开源项目").assertCountEquals(0)
+        compose.runOnIdle { assertTrue(opened) }
+    }
+
+    @Test
+    fun aboutDialogProvidesTheHiddenSecondaryActions() {
+        var checkedUpdates = false
+        var openedEmail = false
+        var openedSource = false
+        compose.setContent {
+            MaterialTheme {
+                AboutDialog(
+                    onDismiss = {},
+                    onCheckUpdates = { checkedUpdates = true },
+                    onOpenAuthorEmail = { openedEmail = true },
+                    onOpenSource = { openedSource = true },
+                )
+            }
+        }
+
+        compose.onNodeWithText("当前版本", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("检查更新").performClick()
+        compose.onNodeWithText("作者邮箱").performClick()
+        compose.onNodeWithText("开源项目").performClick()
+        compose.runOnIdle {
+            assertTrue(checkedUpdates)
+            assertTrue(openedEmail)
+            assertTrue(openedSource)
+        }
     }
 
     @Test

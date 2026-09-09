@@ -18,7 +18,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 
 private const val LATEST_RELEASE_URL =
-    "https://api.github.com/repos/melompeel/codex-desktop-android-remote/releases/latest"
+    "https://api.github.com/repos/melompeel/codex-desktop-remote/releases/latest"
 private const val UPDATE_PREFERENCES = "app_update_download"
 private const val UPDATE_CHANNEL = "app_updates"
 private const val UPDATE_NOTIFICATION_ID = 4202
@@ -54,6 +54,25 @@ internal fun classifyDownloadStatus(status: Int?): DownloadStatus = when (status
 internal fun updateApkFileName(version: String): String =
     "codex-desktop-remote-${normalizeVersion(version) ?: "update"}.apk"
 
+internal fun resolveCheckedUpdateState(
+    currentVersion: String,
+    latestUpdate: AppUpdate,
+    storedState: UpdateState?,
+): UpdateState {
+    val storedUpdate = when (storedState) {
+        is UpdateState.Downloading -> storedState.update
+        is UpdateState.ReadyToInstall -> storedState.update
+        else -> null
+    }
+    if (
+        storedState != null &&
+        storedUpdate != null &&
+        compareVersions(storedUpdate.version, latestUpdate.version) >= 0
+    ) return storedState
+    if (compareVersions(latestUpdate.version, currentVersion) <= 0) return UpdateState.Current
+    return UpdateState.Available(latestUpdate)
+}
+
 class AppUpdater(
     private val context: Context,
     private val client: OkHttpClient = OkHttpClient(),
@@ -63,7 +82,7 @@ class AppUpdater(
     private val preferences = context.getSharedPreferences(UPDATE_PREFERENCES, Context.MODE_PRIVATE)
 
     suspend fun check(): UpdateState = withContext(Dispatchers.IO) {
-        currentDownloadState()?.let { return@withContext it }
+        val storedState = currentDownloadState()
         try {
             val request = Request.Builder()
                 .url(LATEST_RELEASE_URL)
@@ -72,24 +91,33 @@ class AppUpdater(
                 .header("User-Agent", "Codex-Desktop-Remote-Android/${BuildConfig.VERSION_NAME}")
                 .build()
             client.newCall(request).execute().use { response ->
-                if (response.code == 404) return@withContext UpdateState.Current
+                if (response.code == 404) return@withContext storedState ?: UpdateState.Current
                 if (!response.isSuccessful) error("GitHub 返回 ${response.code}")
                 val release = json.decodeFromString<GitHubRelease>(
                     response.body?.string() ?: error("GitHub 没有返回版本信息"),
                 )
                 val version = normalizeVersion(release.tagName)
                     ?: error("无法识别版本号 ${release.tagName}")
-                if (compareVersions(version, BuildConfig.VERSION_NAME) <= 0) {
-                    return@withContext UpdateState.Current
-                }
                 val apk = release.assets.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }
                     ?: error("新版本没有附带 APK 文件")
-                UpdateState.Available(
-                    AppUpdate(version, apk.downloadUrl, release.htmlUrl, release.body.trim()),
+                val latestUpdate = AppUpdate(
+                    version,
+                    apk.downloadUrl,
+                    release.htmlUrl,
+                    release.body.trim(),
                 )
+                val resolved = resolveCheckedUpdateState(
+                    BuildConfig.VERSION_NAME,
+                    latestUpdate,
+                    storedState,
+                )
+                if (storedState != null && resolved is UpdateState.Available) {
+                    clearStoredDownload(removeFromManager = true)
+                }
+                resolved
             }
         } catch (error: Exception) {
-            UpdateState.Error(error.message ?: "检查更新失败")
+            storedState ?: UpdateState.Error(error.message ?: "检查更新失败")
         }
     }
 
@@ -113,6 +141,15 @@ class AppUpdater(
         val downloadId = downloads.enqueue(request)
         storeDownload(downloadId, update)
         return UpdateState.Downloading(update, downloadId)
+    }
+
+    fun cancelDownload(downloadId: Long) {
+        val storedId = preferences.getLong("download_id", -1L)
+        if (storedId == downloadId) {
+            clearStoredDownload(removeFromManager = true)
+        } else {
+            downloads.remove(downloadId)
+        }
     }
 
     fun currentDownloadState(): UpdateState? {
