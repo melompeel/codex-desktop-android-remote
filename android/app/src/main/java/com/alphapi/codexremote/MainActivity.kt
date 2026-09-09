@@ -4,6 +4,8 @@ import android.Manifest
 import android.os.Build
 import android.os.Bundle
 import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -23,6 +25,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
@@ -226,6 +230,7 @@ private fun RemoteHome(
     val updater = remember { AppUpdater(context.applicationContext) }
     val imeVisible = WindowInsets.isImeVisible
     val selected = state.tasks.firstOrNull { it.threadId == state.selectedThreadId }
+    val selectedSyncing = selected?.threadId?.let { it in state.syncingThreadIds } == true
     val canWrite = selected?.ownerAvailable == true && state.writeSupported &&
         state.connected && state.ipcConnected
     val selectedProjectName = when (selectedProjectKey) {
@@ -316,6 +321,24 @@ private fun RemoteHome(
                 },
                 useSystemRoute = state.connectionRouteMode == ConnectionRouteMode.SYSTEM,
                 onUseSystemRouteChange = repository::setUseSystemRoute,
+                onOpenAuthorEmail = {
+                    runCatching {
+                        context.startActivity(
+                            Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:wmelonpeel@gmail.com")),
+                        )
+                    }.onFailure {
+                        Toast.makeText(context, "没有找到可用的邮件应用", Toast.LENGTH_SHORT).show()
+                    }
+                },
+                onOpenSource = {
+                    runCatching {
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/melompeel/codex-desktop-remote")),
+                        )
+                    }.onFailure {
+                        Toast.makeText(context, "没有找到可用的浏览器", Toast.LENGTH_SHORT).show()
+                    }
+                },
             )
         },
     ) {
@@ -350,11 +373,25 @@ private fun RemoteHome(
                             } else {
                                 Color(0xFF197344)
                             }
-                            Text(
-                                connectionStatus.text,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = statusColor,
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (selectedSyncing) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(12.dp),
+                                        strokeWidth = 1.8.dp,
+                                        color = statusColor,
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                }
+                                Text(
+                                    connectionStatus.text + if (selectedSyncing) {
+                                        " · 同步更新"
+                                    } else "",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = statusColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
                     },
                     actions = {
@@ -801,6 +838,9 @@ private fun TasksPane(
         canWrite = canWrite,
         activating = selected.threadId in state.activatingThreads,
         loadingOlderHistory = selected.threadId in state.loadingOlderHistoryThreads,
+        loadingAllHistory = selected.threadId in state.loadingAllHistoryThreads,
+        historyPagesLoaded = state.historyLoadProgressByThread[selected.threadId] ?: 0,
+        historyLoadFailed = selected.threadId in state.historyLoadErrorThreads,
         draft = state.draftsByThread[selected.threadId].orEmpty(),
         deliveryMode = state.deliveryByThread[selected.threadId] ?: defaultDeliveryFor(selected.status),
         queued = state.queueByThread[selected.threadId].orEmpty(),
@@ -828,6 +868,7 @@ private fun TasksPane(
         onLoadWorkspaceFiles = { repository.loadWorkspaceFiles(selected.threadId, it) },
         onWorkspaceFileSelected = { repository.addWorkspaceAttachment(selected.threadId, it) },
         onLoadOlderHistory = { repository.loadOlderHistory(selected.threadId) },
+        onLoadAllHistory = { repository.loadAllHistory(selected.threadId) },
     )
 }
 

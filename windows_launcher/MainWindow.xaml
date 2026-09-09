@@ -157,10 +157,47 @@
 
                 <Border Background="White" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="6" Padding="18" Margin="0,16,0,0">
                     <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="软件更新" FontSize="14" FontWeight="SemiBold" />
+                            <TextBlock x:Name="UpdateStatusText" Text="当前已安装版本" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                            <Button x:Name="CheckUpdateButton" Content="检查更新" Click="CheckUpdate_Click" Margin="8,0,0,0" />
+                            <Button x:Name="DownloadUpdateButton" Content="下载更新" Click="DownloadUpdate_Click" Margin="8,0,0,0" Visibility="Collapsed" />
+                            <Button x:Name="OpenUpdateButton" Content="打开文件位置" Click="OpenUpdate_Click" Margin="8,0,0,0" Visibility="Collapsed" />
+                        </StackPanel>
+                        <ProgressBar x:Name="UpdateProgressBar" Grid.Row="1" Grid.ColumnSpan="2" Height="5" Minimum="0" Maximum="100" Margin="0,14,0,0" Visibility="Collapsed" />
+                    </Grid>
+                </Border>
+
+                <Border Background="White" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="6" Padding="18" Margin="0,16,0,0">
+                    <Grid>
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                         <CheckBox x:Name="AutostartCheckBox" Content="登录 Windows 后自动启动" Checked="Autostart_Changed" Unchecked="Autostart_Changed" />
                         <CheckBox Grid.Column="1" x:Name="CloseToTrayCheckBox" Content="关闭窗口后在系统托盘继续运行" IsChecked="True" Checked="CloseToTray_Changed" Unchecked="CloseToTray_Changed" />
                     </Grid>
+                </Border>
+
+                <Border Background="White" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="6" Padding="18" Margin="0,16,0,0">
+                    <StackPanel>
+                        <TextBlock Text="关于" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,8" />
+                        <TextBlock Margin="0,2">
+                            <Run Text="作者邮箱  " Foreground="{StaticResource MutedBrush}" />
+                            <Hyperlink NavigateUri="mailto:wmelonpeel@gmail.com" RequestNavigate="Link_RequestNavigate">wmelonpeel@gmail.com</Hyperlink>
+                        </TextBlock>
+                        <TextBlock Margin="0,2">
+                            <Run Text="开源地址  " Foreground="{StaticResource MutedBrush}" />
+                            <Hyperlink NavigateUri="https://github.com/melompeel/codex-desktop-remote" RequestNavigate="Link_RequestNavigate">github.com/melompeel/codex-desktop-remote</Hyperlink>
+                        </TextBlock>
+                    </StackPanel>
                 </Border>
 
                 <Expander Header="运行日志" Margin="0,16,0,0" IsExpanded="False">

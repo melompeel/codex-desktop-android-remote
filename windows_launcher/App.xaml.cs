@@ -10,7 +10,11 @@ public partial class App : System.Windows.Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
-        _singleInstance = new Mutex(true, "CodexDesktopRemoteManager.SingleInstance", out var createdNew);
+        var smokeDeviceList = e.Args.Contains("--smoke-device-list", StringComparer.OrdinalIgnoreCase);
+        var mutexName = smokeDeviceList
+            ? $"CodexDesktopRemoteManager.Smoke.{Environment.ProcessId}"
+            : "CodexDesktopRemoteManager.SingleInstance";
+        _singleInstance = new Mutex(true, mutexName, out var createdNew);
         if (!createdNew)
         {
             MessageBox.Show("Codex Remote 管理器已经在运行。请查看任务栏右下角的托盘图标。",
@@ -20,7 +24,6 @@ public partial class App : System.Windows.Application
         }
 
         base.OnStartup(e);
-        var smokeDeviceList = e.Args.Contains("--smoke-device-list", StringComparer.OrdinalIgnoreCase);
         var window = new MainWindow(smokeDeviceList);
         if (smokeDeviceList)
         {

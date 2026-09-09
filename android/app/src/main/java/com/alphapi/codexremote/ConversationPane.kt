@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Terminal
@@ -73,6 +74,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -114,6 +116,9 @@ internal fun TaskConversationPane(
     canWrite: Boolean,
     activating: Boolean = false,
     loadingOlderHistory: Boolean = false,
+    loadingAllHistory: Boolean = false,
+    historyPagesLoaded: Int = 0,
+    historyLoadFailed: Boolean = false,
     draft: String,
     deliveryMode: DeliveryMode,
     queued: List<QueuedFollowUpDto>,
@@ -141,6 +146,7 @@ internal fun TaskConversationPane(
     onWorkspaceFileSelected: (WorkspaceFileDto) -> Unit = {},
     onLoadTaskMedia: (String) -> Unit = {},
     onLoadOlderHistory: () -> Unit = {},
+    onLoadAllHistory: () -> Unit = {},
 ) {
     var showWorkspaceFiles by rememberSaveable { mutableStateOf(false) }
     val imagePicker = rememberLauncherForActivityResult(
@@ -168,7 +174,14 @@ internal fun TaskConversationPane(
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
-                detail == null -> CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp))
+                detail == null -> Column(
+                    modifier = Modifier.align(Alignment.Center),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.5.dp)
+                    Text("正在同步最新记录", style = MaterialTheme.typography.bodySmall)
+                }
                 else -> ConversationTimeline(
                     detail,
                     taskMediaById,
@@ -177,7 +190,11 @@ internal fun TaskConversationPane(
                     onOpenResource,
                     onLoadTaskMedia,
                     loadingOlderHistory,
+                    loadingAllHistory,
+                    historyPagesLoaded,
+                    historyLoadFailed,
                     onLoadOlderHistory,
+                    onLoadAllHistory,
                 )
             }
         }
@@ -279,7 +296,11 @@ private fun ConversationTimeline(
     onOpenResource: (TimelineResourceDto) -> Unit,
     onLoadTaskMedia: (String) -> Unit,
     loadingOlderHistory: Boolean,
+    loadingAllHistory: Boolean,
+    historyPagesLoaded: Int,
+    historyLoadFailed: Boolean,
     onLoadOlderHistory: () -> Unit,
+    onLoadAllHistory: () -> Unit,
 ) {
     val context = LocalContext.current
     val blocks = remember(detail.items) { presentConversation(detail.items) }
@@ -313,6 +334,7 @@ private fun ConversationTimeline(
     val coroutineScope = rememberCoroutineScope()
     var positionedInitially by remember(detail.threadId) { mutableStateOf(false) }
     var autoRequestedCursor by remember(detail.threadId) { mutableStateOf<String?>(null) }
+    var automaticallyLoadedPages by remember(detail.threadId) { mutableIntStateOf(0) }
     val showJumpToLatest by remember {
         derivedStateOf {
             val total = listState.layoutInfo.totalItemsCount
@@ -347,10 +369,14 @@ private fun ConversationTimeline(
         }
         var previous = listState.historyViewport()
         snapshotFlow { listState.historyViewport() }.collect { current ->
-            val underfilled = isHistoryViewportUnderfilled(current)
-            val automaticAlreadyRequested = underfilled && autoRequestedCursor == detail.historyCursor
-            if (shouldRequestOlderHistory(previous, current) && !automaticAlreadyRequested) {
-                if (underfilled) autoRequestedCursor = detail.historyCursor
+            val canAutoLoad = canAutomaticallyLoadHistory(
+                pagesLoaded = automaticallyLoadedPages,
+                lastRequestedCursor = autoRequestedCursor,
+                currentCursor = detail.historyCursor,
+            )
+            if (shouldRequestOlderHistory(previous, current) && canAutoLoad && !historyLoadFailed) {
+                autoRequestedCursor = detail.historyCursor
+                automaticallyLoadedPages += 1
                 onLoadOlderHistory()
             }
             previous = current
@@ -363,13 +389,59 @@ private fun ConversationTimeline(
             modifier = Modifier.fillMaxSize().testTag("conversationTimeline"),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 16.dp),
         ) {
+            if (detail.hasMoreHistory && historyLoadFailed && !loadingOlderHistory) {
+                item("older-history-retry") {
+                    Row(
+                        Modifier.fillMaxWidth().height(44.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TextButton(onClick = onLoadOlderHistory) {
+                            Icon(Icons.Default.History, null, Modifier.size(17.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("重试加载更早记录")
+                        }
+                    }
+                }
+            } else if (
+                detail.hasMoreHistory &&
+                automaticallyLoadedPages >= AUTOMATIC_HISTORY_PAGE_LIMIT &&
+                !loadingOlderHistory
+            ) {
+                item("load-all-history") {
+                    Row(
+                        Modifier.fillMaxWidth().height(44.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TextButton(
+                            onClick = onLoadAllHistory,
+                            modifier = Modifier.testTag("loadAllHistory"),
+                        ) {
+                            Icon(Icons.Default.History, null, Modifier.size(17.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("加载全部历史记录")
+                        }
+                    }
+                }
+            }
             if (detail.hasMoreHistory && loadingOlderHistory) {
                 item("older-history") {
-                    Box(
+                    Row(
                         Modifier.fillMaxWidth().height(36.dp),
-                        contentAlignment = Alignment.Center,
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
                         CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (loadingAllHistory) {
+                                "正在加载全部历史记录（已加载 $historyPagesLoaded 页）"
+                            } else {
+                                "正在加载更早记录"
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                        )
                     }
                 }
             }

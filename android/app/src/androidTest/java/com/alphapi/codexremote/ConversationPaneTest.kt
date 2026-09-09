@@ -196,6 +196,69 @@ class ConversationPaneTest {
     }
 
     @Test
+    fun offersLoadingAllHistoryAfterTwoAutomaticPages() {
+        var automaticRequests = 0
+        var loadAllRequested = false
+        val detail = mutableStateOf(
+            TaskDetailDto(
+                threadId = "history-all",
+                title = "History",
+                status = "idle",
+                revision = 1,
+                items = listOf(TimelineItemDto("reply-0", "turn-0", "assistant", "最近回复")),
+                hasMoreHistory = true,
+                historyCursor = "cursor-0",
+            ),
+        )
+        compose.setContent {
+            MaterialTheme {
+                TaskConversationPane(
+                    task = TaskDto("history-all", "History", "idle", 1, 0, true),
+                    detail = detail.value,
+                    canWrite = true,
+                    draft = "",
+                    deliveryMode = DeliveryMode.START,
+                    queued = emptyList(),
+                    queueReady = false,
+                    attachments = emptyList(),
+                    models = emptyList(),
+                    capabilities = RemoteCapabilitiesDto(),
+                    sending = false,
+                    stopping = false,
+                    onDraftChange = {},
+                    onDeliveryChange = {},
+                    onSend = {},
+                    onStop = {},
+                    onCancelQueued = {},
+                    onOpenSettings = {},
+                    onAttachmentsSelected = {},
+                    onRemoveAttachment = {},
+                    onLoadOlderHistory = {
+                        automaticRequests += 1
+                        detail.value = detail.value.copy(
+                            revision = detail.value.revision + 1,
+                            items = listOf(
+                                TimelineItemDto(
+                                    "reply-$automaticRequests",
+                                    "turn-$automaticRequests",
+                                    "assistant",
+                                    "更早回复 $automaticRequests",
+                                ),
+                            ) + detail.value.items,
+                            historyCursor = "cursor-$automaticRequests",
+                        )
+                    },
+                    onLoadAllHistory = { loadAllRequested = true },
+                )
+            }
+        }
+
+        compose.waitUntil(timeoutMillis = 5_000) { automaticRequests == 2 }
+        compose.onNodeWithTag("loadAllHistory").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertTrue(loadAllRequested) }
+    }
+
+    @Test
     fun keepsComposerVisibleAndToolDetailsCollapsedUntilRequested() {
         var sent = ""
         compose.setContent {

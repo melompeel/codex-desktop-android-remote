@@ -6,6 +6,14 @@ import org.junit.Test
 
 class ConversationHistoryTest {
     @Test
+    fun automaticallyLoadsOnlyTwoDistinctHistoryCursors() {
+        assertEquals(true, canAutomaticallyLoadHistory(0, null, "cursor-1"))
+        assertEquals(false, canAutomaticallyLoadHistory(1, "cursor-1", "cursor-1"))
+        assertEquals(true, canAutomaticallyLoadHistory(1, "cursor-1", "cursor-2"))
+        assertEquals(false, canAutomaticallyLoadHistory(2, "cursor-2", "cursor-3"))
+    }
+
+    @Test
     fun requestsAnotherPageWhenCollapsedBlocksFitWithoutScrolling() {
         val viewport = viewport(
             firstIndex = 0,

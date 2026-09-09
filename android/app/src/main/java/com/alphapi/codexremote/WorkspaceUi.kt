@@ -21,6 +21,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.LaptopWindows
 import androidx.compose.material.icons.filled.LinkOff
@@ -70,6 +72,8 @@ internal fun ProjectDrawerContent(
     onSelect: (String) -> Unit,
     onManageConnections: () -> Unit,
     onCheckUpdates: () -> Unit,
+    onOpenAuthorEmail: () -> Unit = {},
+    onOpenSource: () -> Unit = {},
     useSystemRoute: Boolean = true,
     onUseSystemRouteChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
@@ -152,6 +156,47 @@ internal fun ProjectDrawerContent(
             selected = false,
             onClick = onCheckUpdates,
             icon = { Icon(Icons.Default.SystemUpdate, null) },
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        HorizontalDivider(Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+        Text(
+            "关于",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+        )
+        NavigationDrawerItem(
+            label = {
+                Column {
+                    Text("作者邮箱")
+                    Text(
+                        "wmelonpeel@gmail.com",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            selected = false,
+            onClick = onOpenAuthorEmail,
+            icon = { Icon(Icons.Default.Email, null) },
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        NavigationDrawerItem(
+            label = {
+                Column {
+                    Text("开源项目")
+                    Text(
+                        "github.com/melompeel/codex-desktop-remote",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            },
+            selected = false,
+            onClick = onOpenSource,
+            icon = { Icon(Icons.Default.Code, null) },
             modifier = Modifier.padding(horizontal = 12.dp),
         )
         Text(

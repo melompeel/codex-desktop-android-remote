@@ -51,6 +51,11 @@ class BridgeApi(
         .callTimeout(180, TimeUnit.SECONDS)
         .build()
 
+    fun close() {
+        client.dispatcher.cancelAll()
+        client.connectionPool.evictAll()
+    }
+
     suspend fun pair(code: String, name: String): PairResponse {
         val body = json.encodeToString(
             buildJsonObject {

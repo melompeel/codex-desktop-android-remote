@@ -8,6 +8,16 @@ internal data class HistoryViewport(
     val canScrollForward: Boolean,
 )
 
+internal const val AUTOMATIC_HISTORY_PAGE_LIMIT = 2
+
+internal fun canAutomaticallyLoadHistory(
+    pagesLoaded: Int,
+    lastRequestedCursor: String?,
+    currentCursor: String?,
+): Boolean = currentCursor != null &&
+    pagesLoaded < AUTOMATIC_HISTORY_PAGE_LIMIT &&
+    lastRequestedCursor != currentCursor
+
 internal fun shouldRequestOlderHistory(
     previous: HistoryViewport,
     current: HistoryViewport,

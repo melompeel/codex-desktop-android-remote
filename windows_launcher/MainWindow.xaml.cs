@@ -1,11 +1,13 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Navigation;
 using System.Windows.Threading;
 using Forms = System.Windows.Forms;
 using Button = System.Windows.Controls.Button;
@@ -19,8 +21,10 @@ namespace CodexRemoteManager;
 public partial class MainWindow : Window
 {
     private static readonly string VersionLabel = BuildVersionLabel();
+    private static readonly Version CurrentVersion = BuildVersion();
     private readonly LauncherSettingsStore _settingsStore = new();
     private readonly LocalBridgeClient _client = new();
+    private readonly GitHubUpdateService _updateService = new();
     private readonly BridgeManager _manager;
     private readonly DispatcherTimer _pollTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private readonly DispatcherTimer _countdownTimer = new() { Interval = TimeSpan.FromSeconds(1) };
@@ -36,11 +40,15 @@ public partial class MainWindow : Window
     private bool _restartWhenMissing;
     private int _missingHealthChecks;
     private DateTimeOffset _nextAutomaticRestartAt = DateTimeOffset.MinValue;
+    private WindowsUpdateInfo? _availableUpdate;
+    private string? _downloadedUpdatePath;
+    private bool _checkingUpdate;
 
     public MainWindow(bool smokeMode = false)
     {
         InitializeComponent();
         ManagerVersionText.Text = VersionLabel;
+        UpdateStatusText.Text = $"当前版本 v{CurrentVersion.ToString(3)}";
         Title = $"Codex Remote 管理器 {VersionLabel}";
         _settings = _settingsStore.Load();
         _restartWhenMissing = _settings.StartBridgeOnLaunch;
@@ -66,6 +74,7 @@ public partial class MainWindow : Window
                 await RunOperationAsync(() => _manager.StartAsync(CurrentPort));
             else
                 await RefreshStatusAsync();
+            _ = CheckForUpdatesAsync(interactive: false);
             if (Environment.GetCommandLineArgs().Contains("--minimized", StringComparer.OrdinalIgnoreCase))
                 HideToTray(showNotice: false);
         };
@@ -353,6 +362,107 @@ public partial class MainWindow : Window
         catch (Exception error) { MessageBox.Show(this, error.Message, "Codex Remote"); }
     }
 
+    private async void CheckUpdate_Click(object sender, RoutedEventArgs e) =>
+        await CheckForUpdatesAsync(interactive: true);
+
+    private async Task CheckForUpdatesAsync(bool interactive)
+    {
+        if (_checkingUpdate) return;
+        _checkingUpdate = true;
+        CheckUpdateButton.IsEnabled = false;
+        UpdateStatusText.Text = "正在检查 GitHub 最新版本...";
+        try
+        {
+            _availableUpdate = await _updateService.CheckAsync(CurrentVersion);
+            _downloadedUpdatePath = null;
+            OpenUpdateButton.Visibility = Visibility.Collapsed;
+            if (_availableUpdate is null)
+            {
+                DownloadUpdateButton.Visibility = Visibility.Collapsed;
+                UpdateStatusText.Text = $"当前已是最新版本 v{CurrentVersion.ToString(3)}";
+                if (interactive)
+                    MessageBox.Show(this, "当前已经是最新版本。", "软件更新",
+                        MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            DownloadUpdateButton.Visibility = Visibility.Visible;
+            DownloadUpdateButton.IsEnabled = true;
+            UpdateStatusText.Text = $"发现新版本 v{_availableUpdate.Version} · Windows x64";
+        }
+        catch (Exception error)
+        {
+            UpdateStatusText.Text = "暂时无法检查更新";
+            AppendLog($"检查更新失败：{error.Message}");
+            if (interactive)
+                MessageBox.Show(this, error.Message, "软件更新",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            _checkingUpdate = false;
+            CheckUpdateButton.IsEnabled = true;
+        }
+    }
+
+    private async void DownloadUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        var update = _availableUpdate;
+        if (update is null) return;
+        DownloadUpdateButton.IsEnabled = false;
+        CheckUpdateButton.IsEnabled = false;
+        UpdateProgressBar.Value = 0;
+        UpdateProgressBar.Visibility = Visibility.Visible;
+        try
+        {
+            var progress = new Progress<int>(value =>
+            {
+                UpdateProgressBar.Value = value;
+                UpdateStatusText.Text = $"正在下载 v{update.Version} · {value}%";
+            });
+            _downloadedUpdatePath = await _updateService.DownloadAsync(update, progress);
+            UpdateStatusText.Text = $"v{update.Version} 已下载，关闭管理器后解压覆盖即可更新";
+            DownloadUpdateButton.Visibility = Visibility.Collapsed;
+            OpenUpdateButton.Visibility = Visibility.Visible;
+            AppendLog($"Windows 更新包已下载：{Path.GetFileName(_downloadedUpdatePath)}");
+        }
+        catch (Exception error)
+        {
+            UpdateStatusText.Text = $"v{update.Version} 下载失败，可重试";
+            DownloadUpdateButton.IsEnabled = true;
+            MessageBox.Show(this, error.Message, "下载更新",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            UpdateProgressBar.Visibility = Visibility.Collapsed;
+            CheckUpdateButton.IsEnabled = true;
+        }
+    }
+
+    private void OpenUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        if (_downloadedUpdatePath is not { } path || !File.Exists(path)) return;
+        Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{path}\"")
+        {
+            UseShellExecute = true,
+        });
+    }
+
+    private void Link_RequestNavigate(object sender, RequestNavigateEventArgs e)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
+        }
+        catch (Exception error)
+        {
+            AppendLog($"打开链接失败：{error.Message}");
+            MessageBox.Show(this, "无法打开系统默认应用。", "Codex Remote",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        e.Handled = true;
+    }
+
     private void Autostart_Changed(object sender, RoutedEventArgs e)
     {
         if (_initializing) return;
@@ -465,6 +575,7 @@ public partial class MainWindow : Window
         _trayIcon.Dispose();
         _manager.Dispose();
         _client.Dispose();
+        _updateService.Dispose();
         base.OnClosed(e);
     }
 
@@ -475,6 +586,15 @@ public partial class MainWindow : Window
         if (!BridgeManager.RequiresBridgeRestart(null, VersionLabel) ||
             BridgeManager.RequiresBridgeRestart(VersionLabel, VersionLabel))
             throw new InvalidOperationException("bridge-build-comparison-smoke-failed");
+        if (!GitHubUpdateService.IsNewerVersion(new Version(0, 5, 2), "v0.5.3") ||
+            GitHubUpdateService.IsNewerVersion(new Version(0, 5, 3), "v0.5.3"))
+            throw new InvalidOperationException("windows-update-version-comparison-smoke-failed");
+        var updateAsset = GitHubUpdateService.SelectWindowsAsset([
+            new GitHubReleaseAsset("CodexRemote-Android-v0.5.3-debug.apk", "https://example.invalid/android", 1),
+            new GitHubReleaseAsset("CodexRemote-Windows-x64-v0.5.3.zip", "https://example.invalid/windows", 2),
+        ]);
+        if (updateAsset?.Name != "CodexRemote-Windows-x64-v0.5.3.zip")
+            throw new InvalidOperationException("windows-update-asset-selection-smoke-failed");
         var device = new DeviceInfo(
             "smoke-device", "Smoke Android", "android", DateTimeOffset.Now.ToUnixTimeMilliseconds());
         var run = new System.Windows.Documents.Run { DataContext = device };
@@ -517,4 +637,7 @@ public partial class MainWindow : Window
         var revision = parts[1].Length > 7 ? parts[1][..7] : parts[1];
         return $"v{parts[0]} · {revision}";
     }
+
+    private static Version BuildVersion() =>
+        typeof(MainWindow).Assembly.GetName().Version ?? new Version(0, 0, 0);
 }

@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -47,7 +48,17 @@ class RemoteRepository private constructor(context: Context) {
     private var followedThreadId: String? = null
     private var mediaCacheKey = ""
     private val mediaCache = TaskMediaCache(File(applicationContext.cacheDir, "task_media"))
+    private val snapshotCache = TaskSnapshotCache(File(applicationContext.filesDir, "task_snapshots"))
     private val mediaJobs = mutableMapOf<String, Job>()
+    private val historyJobs = mutableMapOf<String, Job>()
+    private var activeConnection: StoredConnection? = null
+    private var selectionGeneration = 0L
+    private var networkReconnectJob: Job? = null
+    private val networkMonitor = NetworkChangeMonitor(applicationContext, ::scheduleNetworkReconnect)
+
+    init {
+        networkMonitor.start()
+    }
 
     fun restoreAndStart(startService: Boolean = true) {
         if (api != null) {
@@ -57,14 +68,16 @@ class RemoteRepository private constructor(context: Context) {
         if (restoreJob?.isActive == true) return
         restoreJob = scope.launch {
             val saved = store.load() ?: return@launch
+            val cachedTasks = snapshotCache.loadTasks(cacheKey(saved))
             update {
                 it.copy(
                     configured = true,
-                    taskListLoading = true,
+                    taskListLoading = cachedTasks.isEmpty(),
                     serverUrl = saved.serverUrl,
                     activeConnectionId = saved.id,
                     connectionRouteMode = saved.routeMode,
                     serverAddresses = store.serverAddresses(),
+                    tasks = cachedTasks,
                 )
             }
             if (api == null) {
@@ -218,12 +231,24 @@ class RemoteRepository private constructor(context: Context) {
             activationInProgress = threadId in snapshot.activatingThreads,
         )
         cancelMediaLoads()
+        cancelHistoryLoads()
         markTaskViewed(threadId)
+        val generation = if (
+            openAction == TaskOpenAction.WAIT && snapshot.selectedThreadId == threadId
+        ) {
+            selectionGeneration
+        } else {
+            ++selectionGeneration
+        }
         update {
             it.copy(
                 selectedThreadId = threadId,
                 taskDetail = null,
                 loadingOlderHistoryThreads = emptySet(),
+                loadingAllHistoryThreads = emptySet(),
+                historyLoadProgressByThread = emptyMap(),
+                historyLoadErrorThreads = emptySet(),
+                syncingThreadIds = it.syncingThreadIds + threadId,
                 taskMediaById = emptyMap(),
                 loadingTaskMediaIds = emptySet(),
                 failedTaskMediaIds = emptySet(),
@@ -236,22 +261,63 @@ class RemoteRepository private constructor(context: Context) {
                 },
             )
         }
-        if (openAction == TaskOpenAction.WAIT) return
         scope.launch {
-            update { it.copy(loading = true, error = null) }
+            val cacheKey = activeCacheKey()
+            cacheKey?.let { key ->
+                snapshotCache.loadDetail(key, threadId)?.let { cached ->
+                    if (generation == selectionGeneration) {
+                        update { state ->
+                            if (state.selectedThreadId == threadId && state.taskDetail == null) {
+                                state.copy(taskDetail = cached)
+                            } else state
+                        }
+                    }
+                }
+            }
+            if (openAction == TaskOpenAction.WAIT) {
+                update { it.copy(syncingThreadIds = it.syncingThreadIds - threadId) }
+                scheduleRefresh(500)
+                return@launch
+            }
             try {
-                if (openAction == TaskOpenAction.ACTIVATE) refresh()
-                val openFailure = runCatching {
-                    val bridge = requireApi()
+                val bridge = api
+                val openFailure = if (bridge == null) {
+                    IllegalStateException("Bridge is not configured")
+                } else runCatching {
                     if (openAction == TaskOpenAction.ACTIVATE) {
                         bridge.activateTask(threadId)
                     } else {
                         bridge.follow(threadId)
                     }
-                    followedThreadId = threadId
+                    if (generation == selectionGeneration) followedThreadId = threadId
                 }.exceptionOrNull()
-                refreshWithRecovery()
-                if (openFailure != null) {
+                if (bridge != null) {
+                    runCatching { bridge.taskDetail(threadId) }
+                        .onSuccess { latest ->
+                            if (api === bridge && generation == selectionGeneration) {
+                                var merged: TaskDetailDto? = null
+                                update { state ->
+                                    if (state.selectedThreadId == threadId) {
+                                        merged = mergeLatestHistory(state.taskDetail, latest)
+                                        state.copy(taskDetail = merged)
+                                    } else state
+                                }
+                                merged?.let { detail ->
+                                    saveCachedDetail(detail)
+                                }
+                            }
+                        }
+                        .onFailure { error ->
+                            if (api === bridge && generation == selectionGeneration) recordError(error)
+                        }
+                }
+                if (api === bridge) scheduleRefresh(0)
+                if (
+                    openFailure != null &&
+                    api === bridge &&
+                    generation == selectionGeneration &&
+                    mutableState.value.selectedThreadId == threadId
+                ) {
                     update {
                         it.copy(
                             error = if (openAction == TaskOpenAction.ACTIVATE) {
@@ -263,47 +329,91 @@ class RemoteRepository private constructor(context: Context) {
                     }
                 }
             } finally {
-                update {
-                    it.copy(
-                        loading = false,
-                        activatingThreads = it.activatingThreads - threadId,
-                    )
+                update { state ->
+                    if (generation == selectionGeneration || state.selectedThreadId != threadId) {
+                        state.copy(
+                            activatingThreads = state.activatingThreads - threadId,
+                            syncingThreadIds = state.syncingThreadIds - threadId,
+                        )
+                    } else state
                 }
             }
         }
     }
 
     fun loadOlderHistory(threadId: String) {
+        loadHistory(threadId, loadAll = false)
+    }
+
+    fun loadAllHistory(threadId: String) {
+        loadHistory(threadId, loadAll = true)
+    }
+
+    private fun loadHistory(threadId: String, loadAll: Boolean) {
         val snapshot = mutableState.value
         val current = snapshot.taskDetail?.takeIf { it.threadId == threadId } ?: return
-        val cursor = current.historyCursor ?: return
+        current.historyCursor ?: return
         if (!current.hasMoreHistory || threadId in snapshot.loadingOlderHistoryThreads) return
         val bridge = api ?: return
         update {
             it.copy(
                 loadingOlderHistoryThreads = it.loadingOlderHistoryThreads + threadId,
+                loadingAllHistoryThreads = if (loadAll) it.loadingAllHistoryThreads + threadId else it.loadingAllHistoryThreads,
+                historyLoadProgressByThread = it.historyLoadProgressByThread + (threadId to 0),
+                historyLoadErrorThreads = it.historyLoadErrorThreads - threadId,
                 error = null,
             )
         }
-        scope.launch {
-            runCatching { bridge.taskDetail(threadId, cursor) }
-                .onSuccess { older ->
-                    if (api === bridge) {
-                        update { state ->
-                            val detail = state.taskDetail
-                            if (state.selectedThreadId != threadId || detail?.threadId != threadId) {
-                                state
-                            } else {
-                                state.copy(taskDetail = mergeOlderHistory(detail, older))
-                            }
+        val job = scope.launch {
+            var pagesLoaded = 0
+            try {
+                while (true) {
+                    val state = mutableState.value
+                    val detail = state.taskDetail?.takeIf {
+                        state.selectedThreadId == threadId && it.threadId == threadId
+                    } ?: break
+                    val cursor = detail.historyCursor ?: break
+                    if (!detail.hasMoreHistory || api !== bridge) break
+                    val older = bridge.taskDetail(threadId, cursor)
+                    var merged: TaskDetailDto? = null
+                    update { latest ->
+                        val visible = latest.taskDetail
+                        if (latest.selectedThreadId != threadId || visible?.threadId != threadId || api !== bridge) {
+                            latest
+                        } else {
+                            merged = mergeOlderHistory(visible, older)
+                            latest.copy(
+                                taskDetail = merged,
+                                historyLoadProgressByThread = latest.historyLoadProgressByThread +
+                                    (threadId to (pagesLoaded + 1)),
+                            )
                         }
                     }
+                    val result = merged ?: break
+                    pagesLoaded += 1
+                    saveCachedDetail(result)
+                    if (!loadAll || !result.hasMoreHistory || result.historyCursor == null) break
+                    check(result.historyCursor != cursor) { "历史记录游标没有继续前进" }
                 }
-                .onFailure(::recordError)
-            update {
-                it.copy(loadingOlderHistoryThreads = it.loadingOlderHistoryThreads - threadId)
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                if (api === bridge && mutableState.value.selectedThreadId == threadId) {
+                    update { it.copy(historyLoadErrorThreads = it.historyLoadErrorThreads + threadId) }
+                    recordError(error)
+                }
+            } finally {
+                synchronized(historyJobs) {
+                    if (historyJobs[threadId] == coroutineContext[Job]) historyJobs.remove(threadId)
+                }
+                update {
+                    it.copy(
+                        loadingOlderHistoryThreads = it.loadingOlderHistoryThreads - threadId,
+                        loadingAllHistoryThreads = it.loadingAllHistoryThreads - threadId,
+                    )
+                }
             }
         }
+        synchronized(historyJobs) { historyJobs[threadId] = job }
     }
 
     fun markTaskViewed(threadId: String) {
@@ -637,7 +747,11 @@ class RemoteRepository private constructor(context: Context) {
     fun disconnect() {
         val previousApi = api
         streamGeneration += 1
+        selectionGeneration += 1
         cancelMediaLoads()
+        cancelHistoryLoads()
+        networkReconnectJob?.cancel()
+        networkReconnectJob = null
         stream?.cancel()
         stream = null
         reconnectScheduler.reset()
@@ -647,15 +761,21 @@ class RemoteRepository private constructor(context: Context) {
         restoreJob = null
         followedThreadId = null
         api = null
+        activeConnection = null
         store.clear()
         pendingReviewStore.clear()
+        snapshotCache.clearAll()
         applicationContext.stopService(Intent(applicationContext, RemoteService::class.java))
         mutableState.value = RemoteState()
-        scope.launch { runCatching { previousApi?.revokeSelf() } }
+        scope.launch {
+            runCatching { previousApi?.revokeSelf() }
+            previousApi?.close()
+        }
     }
 
     private fun configure(saved: StoredConnection) {
         authorizationExpired = false
+        activeConnection = saved
         refreshCoordinator?.dispose()
         refreshCoordinator = ConflatedRefreshCoordinator(scope) {
             refreshWithRecovery()
@@ -680,8 +800,13 @@ class RemoteRepository private constructor(context: Context) {
     }
 
     private suspend fun activateConnection(saved: StoredConnection) {
+        val previousApi = api
         streamGeneration += 1
+        selectionGeneration += 1
         cancelMediaLoads()
+        cancelHistoryLoads()
+        networkReconnectJob?.cancel()
+        networkReconnectJob = null
         stream?.cancel()
         stream = null
         reconnectScheduler.reset()
@@ -689,15 +814,18 @@ class RemoteRepository private constructor(context: Context) {
         refreshCoordinator = null
         followedThreadId = null
         api = null
+        previousApi?.close()
         pendingReviewStore.clear()
+        val cachedTasks = snapshotCache.loadTasks(cacheKey(saved))
         mutableState.value = RemoteState(
             configured = true,
             loading = true,
-            taskListLoading = true,
+            taskListLoading = cachedTasks.isEmpty(),
             serverUrl = saved.serverUrl,
             activeConnectionId = saved.id,
             connectionRouteMode = saved.routeMode,
             serverAddresses = store.serverAddresses(),
+            tasks = cachedTasks,
         )
         configure(saved)
         openStream()
@@ -780,33 +908,40 @@ class RemoteRepository private constructor(context: Context) {
         }
         if (api !== bridge) return
         val completedReviewThreadIds = pendingReviewStore.observe(payload.tasks)
-        val current = mutableState.value
-        val selectedThreadId = threadIdForDetail(current.selectedThreadId, payload.tasks)
-        val latestDetail = selectedThreadId?.let { selected ->
+        val requestedSelection = mutableState.value.selectedThreadId
+        val latestDetail = requestedSelection?.let { selected ->
             runCatching { bridge.taskDetail(selected) }.getOrNull()
         }
-        val detail = latestDetail?.let { mergeLatestHistory(current.taskDetail, it) }
-        val queue = if (selectedThreadId != null && payload.capabilities.queue) {
-            runCatching { bridge.queue(selectedThreadId) }.getOrNull()
+        val queue = if (requestedSelection != null && payload.capabilities.queue) {
+            runCatching { bridge.queue(requestedSelection) }.getOrNull()
         } else null
-        val visibleMediaIds = detail?.items?.mapNotNull { it.media?.mediaId }?.toSet().orEmpty()
         if (api !== bridge) return
+        var detailToCache: TaskDetailDto? = null
         update { current ->
+            val resolved = resolveSelectedTaskRefresh(
+                selectedThreadId = current.selectedThreadId,
+                currentDetail = current.taskDetail,
+                tasks = payload.tasks,
+                requestedThreadId = requestedSelection,
+                fetchedDetail = latestDetail,
+            )
+            val visibleMediaIds = resolved.detail?.items?.mapNotNull { it.media?.mediaId }?.toSet().orEmpty()
+            detailToCache = resolved.detail
             current.copy(
                 configured = true,
                 tasks = payload.tasks,
-                taskDetail = detail,
+                taskDetail = resolved.detail,
                 approvals = payload.approvals,
                 completedReviewThreadIds = completedReviewThreadIds,
-                selectedThreadId = selectedThreadId,
+                selectedThreadId = resolved.threadId,
                 capabilities = payload.capabilities,
                 models = payload.models,
                 taskListLoading = false,
-                queueByThread = if (selectedThreadId != null && queue != null) {
-                    current.queueByThread + (selectedThreadId to queue.values())
+                queueByThread = if (requestedSelection != null && resolved.threadId == requestedSelection && queue != null) {
+                    current.queueByThread + (requestedSelection to queue.values())
                 } else current.queueByThread,
-                queueHashByThread = if (selectedThreadId != null && queue != null) {
-                    current.queueHashByThread + (selectedThreadId to queue.hash)
+                queueHashByThread = if (requestedSelection != null && resolved.threadId == requestedSelection && queue != null) {
+                    current.queueHashByThread + (requestedSelection to queue.hash)
                 } else current.queueHashByThread,
                 taskMediaById = current.taskMediaById.filterKeys { it in visibleMediaIds },
                 loadingTaskMediaIds = current.loadingTaskMediaIds.filterTo(mutableSetOf()) {
@@ -818,14 +953,22 @@ class RemoteRepository private constructor(context: Context) {
                 error = null,
             )
         }
+        activeCacheKey()?.let { key ->
+            runCatching { snapshotCache.saveTasks(key, payload.tasks) }
+            detailToCache?.let { detail ->
+                runCatching { snapshotCache.saveDetail(key, detail) }
+            }
+        }
     }
 
     private suspend fun refreshWithRecovery() {
+        val expectedApi = api
         try {
             refreshNow()
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {
+            if (api !== expectedApi) return
             val presentation = refreshFailurePresentation(error, mutableState.value)
             if (isAuthorizationFailure(error)) markAuthorizationExpired(error)
             update {
@@ -895,6 +1038,68 @@ class RemoteRepository private constructor(context: Context) {
         }
     }
 
+    private fun cancelHistoryLoads() {
+        synchronized(historyJobs) {
+            historyJobs.values.forEach(Job::cancel)
+            historyJobs.clear()
+        }
+    }
+
+    @Synchronized
+    private fun scheduleNetworkReconnect() {
+        val saved = activeConnection ?: return
+        if (authorizationExpired) return
+        networkReconnectJob?.cancel()
+        networkReconnectJob = scope.launch {
+            delay(NETWORK_RECONNECT_DEBOUNCE_MS)
+            if (activeConnection?.id != saved.id || authorizationExpired) return@launch
+            runCatching { rebuildTransport(saved) }
+                .onFailure { error ->
+                    if (activeConnection?.id == saved.id && !authorizationExpired) {
+                        recordError(error)
+                    }
+                }
+        }
+    }
+
+    private suspend fun rebuildTransport(saved: StoredConnection) {
+        val previousApi = api
+        streamGeneration += 1
+        cancelMediaLoads()
+        cancelHistoryLoads()
+        stream?.cancel()
+        stream = null
+        reconnectScheduler.reset()
+        refreshCoordinator?.dispose()
+        refreshCoordinator = null
+        followedThreadId = null
+        api = null
+        previousApi?.close()
+        update {
+            it.copy(
+                connected = false,
+                taskListLoading = it.tasks.isEmpty(),
+                loadingOlderHistoryThreads = emptySet(),
+                loadingAllHistoryThreads = emptySet(),
+                historyLoadProgressByThread = emptyMap(),
+                error = null,
+            )
+        }
+        configure(saved)
+        openStream()
+        refreshWithRecovery()
+    }
+
+    private fun cacheKey(saved: StoredConnection): String = "${saved.id}:${saved.deviceId}"
+
+    private fun activeCacheKey(): String? = activeConnection?.let(::cacheKey)
+
+    private fun saveCachedDetail(detail: TaskDetailDto) {
+        activeCacheKey()?.let { key ->
+            runCatching { snapshotCache.saveDetail(key, detail) }
+        }
+    }
+
     private fun action(onSuccess: (() -> Unit)? = null, block: suspend () -> Unit) {
         scope.launch {
             update { it.copy(loading = true, error = null) }
@@ -944,6 +1149,7 @@ class RemoteRepository private constructor(context: Context) {
 
     companion object {
         private const val MAX_COMPOSER_ATTACHMENTS = 8
+        private const val NETWORK_RECONNECT_DEBOUNCE_MS = 650L
         @Volatile private var instance: RemoteRepository? = null
         fun get(context: Context): RemoteRepository = instance ?: synchronized(this) {
             instance ?: RemoteRepository(context.applicationContext).also { instance = it }

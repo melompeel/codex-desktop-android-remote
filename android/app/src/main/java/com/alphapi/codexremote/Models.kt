@@ -357,6 +357,10 @@ data class RemoteState(
     val creatingTask: Boolean = false,
     val taskCreationError: String? = null,
     val loadingOlderHistoryThreads: Set<String> = emptySet(),
+    val loadingAllHistoryThreads: Set<String> = emptySet(),
+    val historyLoadProgressByThread: Map<String, Int> = emptyMap(),
+    val historyLoadErrorThreads: Set<String> = emptySet(),
+    val syncingThreadIds: Set<String> = emptySet(),
     val error: String? = null,
 ) {
     val pendingTaskCount: Int
