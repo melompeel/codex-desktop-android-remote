@@ -361,7 +361,7 @@ class RemoteRepository private constructor(context: Context) {
                                     error = if (openAction == TaskOpenAction.ACTIVATE) {
                                         "无法在电脑端载入此对话，当前仍可查看历史记录"
                                     } else {
-                                        "桌面未打开此任务，当前只能查看历史记录"
+                                        "暂未连接到桌面任务，当前仍可查看历史记录"
                                     },
                                 )
                             }

@@ -115,6 +115,7 @@ internal fun TaskConversationPane(
     detail: TaskDetailDto?,
     canWrite: Boolean,
     activating: Boolean = false,
+    syncing: Boolean = false,
     loadingOlderHistory: Boolean = false,
     loadingAllHistory: Boolean = false,
     historyPagesLoaded: Int = 0,
@@ -163,14 +164,8 @@ internal fun TaskConversationPane(
     } else DeliveryMode.START
 
     Column(Modifier.fillMaxSize()) {
-        if (!task.ownerAvailable) {
-            ConnectionBanner(
-                if (activating) {
-                    "正在电脑端载入此对话，完成后即可继续输入"
-                } else {
-                    "桌面未打开此任务，当前只能查看历史记录"
-                },
-            )
+        taskConnectionPresentation(task.ownerAvailable, activating, syncing)?.let {
+            ConnectionBanner(it)
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
@@ -276,12 +271,22 @@ private fun QueuedFollowUps(
 }
 
 @Composable
-private fun ConnectionBanner(text: String) {
-    Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
+private fun ConnectionBanner(presentation: ConnectionStatusPresentation) {
+    val containerColor = if (presentation.isError) {
+        MaterialTheme.colorScheme.errorContainer
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant
+    }
+    val contentColor = if (presentation.isError) {
+        MaterialTheme.colorScheme.onErrorContainer
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(color = containerColor, modifier = Modifier.fillMaxWidth()) {
         Text(
-            text,
+            presentation.text,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            color = MaterialTheme.colorScheme.onErrorContainer,
+            color = contentColor,
             style = MaterialTheme.typography.bodySmall,
         )
     }

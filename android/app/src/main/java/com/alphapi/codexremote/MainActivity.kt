@@ -928,6 +928,7 @@ private fun TasksPane(
         detail = state.taskDetail?.takeIf { it.threadId == selected.threadId },
         canWrite = canWrite,
         activating = selected.threadId in state.activatingThreads,
+        syncing = selected.threadId in state.syncingThreadIds,
         loadingOlderHistory = selected.threadId in state.loadingOlderHistoryThreads,
         loadingAllHistory = selected.threadId in state.loadingAllHistoryThreads,
         historyPagesLoaded = state.historyLoadProgressByThread[selected.threadId] ?: 0,

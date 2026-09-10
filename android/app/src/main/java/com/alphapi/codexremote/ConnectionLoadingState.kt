@@ -7,6 +7,22 @@ internal data class ConnectionStatusPresentation(
     val isError: Boolean,
 )
 
+internal fun taskConnectionPresentation(
+    ownerAvailable: Boolean,
+    activating: Boolean,
+    syncing: Boolean,
+): ConnectionStatusPresentation? = when {
+    ownerAvailable -> null
+    activating || syncing -> ConnectionStatusPresentation(
+        text = "正在连接桌面任务，当前显示已加载的历史记录",
+        isError = false,
+    )
+    else -> ConnectionStatusPresentation(
+        text = "正在确认桌面任务连接，当前显示已加载的历史记录",
+        isError = false,
+    )
+}
+
 internal data class RefreshFailurePresentation(
     val message: String,
     val shouldRetry: Boolean,

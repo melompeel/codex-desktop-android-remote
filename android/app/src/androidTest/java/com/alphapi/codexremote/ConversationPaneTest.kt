@@ -68,7 +68,7 @@ class ConversationPaneTest {
             }
         }
 
-        compose.onNodeWithText("正在电脑端载入此对话", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("正在连接桌面任务", substring = true).assertIsDisplayed()
         compose.onAllNodesWithText("当前只能查看历史记录", substring = true).assertCountEquals(0)
     }
 
