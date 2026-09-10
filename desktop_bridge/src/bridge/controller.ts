@@ -52,6 +52,7 @@ export interface CodexControlPort {
     expected: string;
     installed: string | null;
   };
+  discoverOwner(threadId: string): Promise<string>;
   loadHistory(threadId: string): Promise<IpcFrame>;
   startTurn(
     threadId: string,
@@ -137,6 +138,7 @@ export type SendMessageResult = {
 export interface TaskCatalogPort {
   listThreads(limit?: number): Promise<Array<Record<string, unknown>>>;
   listThreadPage?(query: TaskListQuery): Promise<CatalogThreadPage>;
+  hasThread?(threadId: string): Promise<boolean>;
   readThread?(threadId: string): Promise<Record<string, unknown> | null>;
   listModels?(refresh?: boolean): Promise<Array<Record<string, unknown>>>;
 }
@@ -209,7 +211,7 @@ export class BridgeController {
       writable: this.control.writable,
       taskCreation: this.control.writable && Boolean(this.taskCreator),
       taskActivation: this.control.writable && Boolean(
-        this.activateThread && this.catalog?.readThread,
+        this.activateThread && (this.catalog?.hasThread || this.catalog?.readThread),
       ),
       deliveries: ["auto", "start", "steer", "queue"],
       queue: Boolean(this.control.setQueuedFollowUps),
@@ -430,7 +432,11 @@ export class BridgeController {
     if (this.store.getThread(threadId)) {
       return { ownerAvailable: true, alreadyOpen: true };
     }
-    if (!this.control.writable || !this.activateThread || !this.catalog?.readThread) {
+    if (
+      !this.control.writable ||
+      !this.activateThread ||
+      (!this.catalog?.hasThread && !this.catalog?.readThread)
+    ) {
       throw new Error("task-activation-unavailable");
     }
     const existing = this.activationInFlight.get(threadId);
@@ -680,29 +686,44 @@ export class BridgeController {
       1,
       Math.ceil(this.ownerHandoffTimeoutMs / this.ownerHandoffPollIntervalMs),
     );
+    const deadline = Date.now() + this.ownerHandoffTimeoutMs;
     let lastError: unknown = new Error("desktop-owner-unavailable");
     for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) break;
       try {
-        await this.control.loadHistory(threadId);
+        await withTimeout(
+          this.control.discoverOwner(threadId),
+          remainingMs,
+          "desktop-owner-discovery-timeout",
+        );
         return;
       } catch (error) {
         lastError = error;
         if (!isRetryableOwnerError(error)) throw error;
       }
       if (attempt + 1 < attempts) {
-        await this.sleep(this.ownerHandoffPollIntervalMs);
+        const delayMs = Math.min(
+          this.ownerHandoffPollIntervalMs,
+          Math.max(0, deadline - Date.now()),
+        );
+        if (delayMs <= 0) break;
+        await this.sleep(delayMs);
       }
     }
     throw new Error(`task-owner-handoff-timeout:${errorMessage(lastError)}`);
   }
 
   private async activateHistoricalTask(threadId: string): Promise<TaskActivationResult> {
-    const history = await this.catalog!.readThread!(threadId);
-    if (!history) throw new Error("task-detail-not-found");
+    const exists = this.catalog!.hasThread
+      ? await this.catalog!.hasThread(threadId)
+      : Boolean(await this.catalog!.readThread!(threadId));
+    if (!exists) throw new Error("task-detail-not-found");
     this.store.appendEvent("task.activation_requested", {}, threadId);
     try {
       await this.activateThread!(threadId);
       await this.waitForDesktopOwner(threadId);
+      this.followInBackground(threadId);
       const result = { ownerAvailable: true, alreadyOpen: false } as const;
       this.store.appendEvent("task.activated", result, threadId);
       return result;
@@ -717,7 +738,12 @@ export class BridgeController {
   }
 
   private autoFollow(threadId: string): void {
-    if (this.store.getThread(threadId) || this.autoFollowInFlight.has(threadId)) return;
+    if (this.store.getThread(threadId)) return;
+    this.followInBackground(threadId);
+  }
+
+  private followInBackground(threadId: string): void {
+    if (this.autoFollowInFlight.has(threadId)) return;
     this.autoFollowInFlight.add(threadId);
     void this.control.loadHistory(threadId)
       .catch((error) => {
@@ -752,6 +778,22 @@ export class BridgeController {
     );
     return result;
   }
+}
+
+function withTimeout<T>(promise: Promise<T>, milliseconds: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), milliseconds);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 function taskUpdatedAt(state: Record<string, unknown>): number | undefined {

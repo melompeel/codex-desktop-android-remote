@@ -1134,6 +1134,7 @@ class ApiFakeControl implements CodexControlPort {
     expected: "26.901.1978.0",
     installed: "26.901.1978.0",
   };
+  async discoverOwner(): Promise<string> { return "desktop-owner"; }
   async loadHistory(): Promise<IpcFrame> { return ok(); }
   async startTurn(
     threadId: string,

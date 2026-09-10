@@ -33,14 +33,19 @@ class FakeControl implements CodexControlPort {
     start?: boolean;
   } = {}) {}
 
-  async loadHistory(threadId: string): Promise<IpcFrame> {
-    this.calls.push(["loadHistory", threadId]);
+  async discoverOwner(threadId: string): Promise<string> {
+    this.calls.push(["discoverOwner", threadId]);
     const sequencedError = this.failures.historyErrors?.shift();
     if (sequencedError) throw new Error(sequencedError);
     if ((this.failures.history ?? 0) > 0) {
       this.failures.history = (this.failures.history ?? 0) - 1;
       throw new Error(this.failures.historyError ?? "desktop-owner-unavailable");
     }
+    return "desktop-owner";
+  }
+
+  async loadHistory(threadId: string): Promise<IpcFrame> {
+    this.calls.push(["loadHistory", threadId]);
     return success();
   }
 
@@ -270,9 +275,9 @@ describe("BridgeController", () => {
     }]);
     expect(JSON.stringify(materializeCalls)).not.toContain("完成 Android 界面");
     expect(control.calls.map(([name]) => name)).toEqual([
-      "loadHistory",
-      "loadHistory",
-      "loadHistory",
+      "discoverOwner",
+      "discoverOwner",
+      "discoverOwner",
       "settings",
       "startTurn",
     ]);
@@ -318,7 +323,7 @@ describe("BridgeController", () => {
       error: expect.stringContaining("task-owner-handoff-timeout"),
     });
     expect(materialized).toBe(1);
-    expect(control.calls.filter(([name]) => name === "loadHistory")).toHaveLength(2);
+    expect(control.calls.filter(([name]) => name === "discoverOwner")).toHaveLength(2);
     expect(control.calls.some(([name]) => name === "startTurn")).toBe(false);
   });
 
@@ -356,9 +361,9 @@ describe("BridgeController", () => {
       stage: "complete",
     });
     expect(control.calls.map(([name]) => name)).toEqual([
-      "loadHistory",
-      "loadHistory",
-      "loadHistory",
+      "discoverOwner",
+      "discoverOwner",
+      "discoverOwner",
       "settings",
       "startTurn",
     ]);
@@ -395,7 +400,8 @@ describe("BridgeController", () => {
 
     expect(activated).toEqual(["01a0705b-c5c1-7d00-95bc-efd02a96789b"]);
     expect(control.calls).toEqual([
-      ["loadHistory", "01a0705b-c5c1-7d00-95bc-efd02a96789b"],
+      ["discoverOwner", "01a0705b-c5c1-7d00-95bc-efd02a96789b"],
+      ["discoverOwner", "01a0705b-c5c1-7d00-95bc-efd02a96789b"],
       ["loadHistory", "01a0705b-c5c1-7d00-95bc-efd02a96789b"],
     ]);
     expect(store.eventsAfter(0)).toEqual(expect.arrayContaining([
@@ -454,6 +460,64 @@ describe("BridgeController", () => {
       { ownerAvailable: true, alreadyOpen: false },
       { ownerAvailable: true, alreadyOpen: false },
     ]);
+  });
+
+  it("returns after owner discovery while complete history continues in the background", async () => {
+    let releaseHistory = () => {};
+    const historyGate = new Promise<void>((resolve) => { releaseHistory = resolve; });
+    class SlowHistoryControl extends FakeControl {
+      override async loadHistory(threadId: string): Promise<IpcFrame> {
+        this.calls.push(["loadHistory", threadId]);
+        await historyGate;
+        return success();
+      }
+    }
+    const control = new SlowHistoryControl();
+    const controller = new BridgeController(
+      control,
+      new BridgeStore(),
+      {
+        async listThreads() { return []; },
+        async hasThread() { return true; },
+      },
+      undefined,
+      { activateThread: async () => undefined },
+    );
+
+    await expect(controller.activateTask("history-thread")).resolves.toEqual({
+      ownerAvailable: true,
+      alreadyOpen: false,
+    });
+    expect(control.calls).toContainEqual(["loadHistory", "history-thread"]);
+    releaseHistory();
+  });
+
+  it("applies a wall-clock owner deadline even when one probe is slow", async () => {
+    class SlowOwnerControl extends FakeControl {
+      override async discoverOwner(threadId: string): Promise<string> {
+        this.calls.push(["discoverOwner", threadId]);
+        return new Promise<string>(() => undefined);
+      }
+    }
+    const controller = new BridgeController(
+      new SlowOwnerControl(),
+      new BridgeStore(),
+      {
+        async listThreads() { return []; },
+        async hasThread() { return true; },
+      },
+      undefined,
+      {
+        timeoutMs: 10,
+        pollIntervalMs: 1,
+        activateThread: async () => undefined,
+      },
+    );
+    const startedAt = Date.now();
+
+    await expect(controller.activateTask("history-thread"))
+      .rejects.toThrow("task-owner-handoff-timeout");
+    expect(Date.now() - startedAt).toBeLessThan(100);
   });
 
   it("turns a push request into a fixed Codex instruction", async () => {

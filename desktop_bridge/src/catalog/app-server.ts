@@ -76,6 +76,14 @@ export class AppServerCatalog implements TaskCatalogPort {
     return isRecord(result.thread) ? result.thread : null;
   }
 
+  async hasThread(threadId: string): Promise<boolean> {
+    const result = await this.readRequest("thread/read", {
+      threadId,
+      includeTurns: false,
+    });
+    return isRecord(result.thread);
+  }
+
   async listModels(refresh = false): Promise<Array<Record<string, unknown>>> {
     const now = this.now();
     if (!refresh && this.modelCache && this.modelCache.expiresAt > now) {

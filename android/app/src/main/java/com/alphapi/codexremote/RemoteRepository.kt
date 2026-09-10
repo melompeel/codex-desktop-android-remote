@@ -41,6 +41,14 @@ class RemoteRepository private constructor(context: Context) {
             refreshWithRecovery()
         }
     }
+    private val connectionStatusGrace = ConnectionStatusGrace(scope) { connected ->
+        update {
+            it.copy(
+                connected = connected,
+                connectionEstablished = it.connectionEstablished || connected,
+            )
+        }
+    }
     private var refreshCoordinator: ConflatedRefreshCoordinator? = null
     private var restoreJob: Job? = null
     @Volatile private var streamGeneration = 0
@@ -282,19 +290,21 @@ class RemoteRepository private constructor(context: Context) {
             var keepSyncing = false
             try {
                 val bridge = api
-                val openFailure = if (bridge == null) {
+                val configurationFailure = if (bridge == null) {
                     IllegalStateException("Bridge is not configured")
-                } else runCatching {
-                    if (openAction == TaskOpenAction.ACTIVATE) {
-                        bridge.activateTask(threadId)
-                    } else {
-                        bridge.follow(threadId)
-                    }
-                    if (generation == selectionGeneration) followedThreadId = threadId
-                }.exceptionOrNull()
-                if (bridge != null) {
-                    runCatching { bridge.taskDetail(threadId) }
-                        .onSuccess { latest ->
+                } else null
+                val openResults = if (bridge != null) {
+                    loadTaskWhileOpening(
+                        openTask = {
+                            if (openAction == TaskOpenAction.ACTIVATE) {
+                                bridge.activateTask(threadId)
+                            } else {
+                                bridge.follow(threadId)
+                                if (generation == selectionGeneration) followedThreadId = threadId
+                            }
+                        },
+                        loadHistory = { bridge.taskDetail(threadId) },
+                        onHistoryLoaded = { latest ->
                             if (api === bridge && generation == selectionGeneration) {
                                 var merged: TaskDetailDto? = null
                                 update { state ->
@@ -307,52 +317,58 @@ class RemoteRepository private constructor(context: Context) {
                                     saveCachedDetail(detail)
                                 }
                             }
-                        }
-                        .onFailure { error ->
-                            if (api === bridge && generation == selectionGeneration) {
-                                val presentation = refreshFailurePresentation(error, mutableState.value)
-                                if (presentation.shouldRetry && !presentation.isError) {
-                                    keepSyncing = true
-                                    update { state ->
-                                        if (state.selectedThreadId == threadId) {
-                                            state.copy(
-                                                syncingThreadIds = state.syncingThreadIds + threadId,
-                                                error = null,
-                                            )
-                                        } else state
-                                    }
-                                    scheduleRefresh(1_000)
-                                } else {
-                                    recordError(error)
-                                }
-                            }
-                        }
-                }
-                if (api === bridge) scheduleRefresh(0)
-                if (
-                    openFailure != null &&
-                    api === bridge &&
-                    generation == selectionGeneration &&
-                    mutableState.value.selectedThreadId == threadId
-                ) {
-                    val presentation = refreshFailurePresentation(openFailure, mutableState.value)
-                    when {
-                        isAuthorizationFailure(openFailure) -> recordError(openFailure)
-                        presentation.shouldRetry && !presentation.isError -> {
+                        },
+                    )
+                } else null
+                openResults?.history?.exceptionOrNull()?.let { error ->
+                    if (api === bridge && generation == selectionGeneration) {
+                        val presentation = refreshFailurePresentation(error, mutableState.value)
+                        if (presentation.shouldRetry && !presentation.isError) {
                             keepSyncing = true
-                            update { it.copy(error = null) }
+                            update { state ->
+                                if (state.selectedThreadId == threadId) {
+                                    state.copy(
+                                        syncingThreadIds = state.syncingThreadIds + threadId,
+                                        error = null,
+                                    )
+                                } else state
+                            }
                             scheduleRefresh(1_000)
-                        }
-                        else -> update {
-                            it.copy(
-                                error = if (openAction == TaskOpenAction.ACTIVATE) {
-                                    "无法在电脑端载入此对话，当前仍可查看历史记录"
-                                } else {
-                                    "桌面未打开此任务，当前只能查看历史记录"
-                                },
-                            )
+                        } else {
+                            recordError(error)
                         }
                     }
+                }
+                val openFailure = configurationFailure ?: openResults?.open?.exceptionOrNull()
+                if (bridge != null) {
+                    if (api === bridge) scheduleRefresh(0)
+                    if (
+                        openFailure != null &&
+                        api === bridge &&
+                        generation == selectionGeneration &&
+                        mutableState.value.selectedThreadId == threadId
+                    ) {
+                        val presentation = refreshFailurePresentation(openFailure, mutableState.value)
+                        when {
+                            isAuthorizationFailure(openFailure) -> recordError(openFailure)
+                            presentation.shouldRetry && !presentation.isError -> {
+                                keepSyncing = true
+                                update { it.copy(error = null) }
+                                scheduleRefresh(1_000)
+                            }
+                            else -> update {
+                                it.copy(
+                                    error = if (openAction == TaskOpenAction.ACTIVATE) {
+                                        "无法在电脑端载入此对话，当前仍可查看历史记录"
+                                    } else {
+                                        "桌面未打开此任务，当前只能查看历史记录"
+                                    },
+                                )
+                            }
+                        }
+                    }
+                } else if (openFailure != null) {
+                    recordError(openFailure)
                 }
             } finally {
                 update { state ->
@@ -826,6 +842,7 @@ class RemoteRepository private constructor(context: Context) {
         cancelHistoryLoads()
         networkReconnectJob?.cancel()
         networkReconnectJob = null
+        connectionStatusGrace.reset()
         stream?.cancel()
         stream = null
         reconnectScheduler.reset()
@@ -881,6 +898,7 @@ class RemoteRepository private constructor(context: Context) {
         cancelHistoryLoads()
         networkReconnectJob?.cancel()
         networkReconnectJob = null
+        connectionStatusGrace.reset()
         stream?.cancel()
         stream = null
         reconnectScheduler.reset()
@@ -912,23 +930,18 @@ class RemoteRepository private constructor(context: Context) {
         reconnectScheduler.cancel()
         val generation = ++streamGeneration
         stream?.cancel()
-        update { it.copy(connected = false) }
         stream = bridge.stream(
             onEvent = {
                 if (generation == streamGeneration) scheduleRefresh(150)
             },
             onConnected = { connected ->
                 if (generation != streamGeneration) return@stream
-                update {
-                    it.copy(
-                        connected = connected,
-                        connectionEstablished = it.connectionEstablished || connected,
-                    )
-                }
                 if (connected) {
+                    connectionStatusGrace.connected()
                     reconnectScheduler.reset()
                     scheduleRefresh(0)
                 } else {
+                    connectionStatusGrace.disconnected()
                     followedThreadId = null
                     if (!authorizationExpired) reconnectScheduler.schedule()
                 }
@@ -1167,7 +1180,6 @@ class RemoteRepository private constructor(context: Context) {
         previousApi?.close()
         update {
             it.copy(
-                connected = false,
                 taskListLoading = it.tasks.isEmpty(),
                 loadingOlderHistoryThreads = emptySet(),
                 loadingAllHistoryThreads = emptySet(),
@@ -1216,6 +1228,7 @@ class RemoteRepository private constructor(context: Context) {
         streamGeneration += 1
         stream?.cancel()
         stream = null
+        connectionStatusGrace.disconnected(immediate = true)
         update {
             it.copy(
                 connected = false,

@@ -63,6 +63,25 @@ class FakeAppServer extends EventEmitter {
 }
 
 describe("AppServerCatalog", () => {
+  it("checks task existence without loading turns", async () => {
+    const requests: RequestMessage[] = [];
+    const server = new FakeAppServer((request, child) => {
+      if (request.method === "initialize") child.result(request.id!, {});
+      if (request.method === "thread/read") {
+        requests.push(request);
+        child.result(request.id!, { thread: { id: "thread-1" } });
+      }
+    });
+    const catalog = new AppServerCatalog("codex", 20, () => server.asChild());
+
+    await expect(catalog.hasThread("thread-1")).resolves.toBe(true);
+    expect(requests).toEqual([expect.objectContaining({
+      method: "thread/read",
+      params: { threadId: "thread-1", includeTurns: false },
+    })]);
+    catalog.dispose();
+  });
+
   it("restarts after initialization fails", async () => {
     const first = new FakeAppServer((request, server) => {
       if (request.method === "initialize") server.error(request.id!, "initialize-failed");
