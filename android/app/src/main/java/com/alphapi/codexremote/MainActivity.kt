@@ -860,7 +860,10 @@ internal fun ConnectionManagerDialog(
                     onClick = {
                         val editingId = editingConnectionId
                         if (editingId == null) {
-                            onPair(newName, newUrl, pairingCode, clearForm)
+                            onPair(newName, newUrl, pairingCode) {
+                                clearForm()
+                                onDismiss()
+                            }
                         } else {
                             onEdit(editingId, newName, newUrl, clearForm)
                         }

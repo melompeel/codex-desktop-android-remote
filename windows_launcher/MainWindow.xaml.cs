@@ -586,14 +586,14 @@ public partial class MainWindow : Window
         if (!BridgeManager.RequiresBridgeRestart(null, VersionLabel) ||
             BridgeManager.RequiresBridgeRestart(VersionLabel, VersionLabel))
             throw new InvalidOperationException("bridge-build-comparison-smoke-failed");
-        if (!GitHubUpdateService.IsNewerVersion(new Version(0, 5, 2), "v0.5.3") ||
-            GitHubUpdateService.IsNewerVersion(new Version(0, 5, 3), "v0.5.3"))
+        if (!GitHubUpdateService.IsNewerVersion(new Version(0, 5, 3), "v0.5.4") ||
+            GitHubUpdateService.IsNewerVersion(new Version(0, 5, 4), "v0.5.4"))
             throw new InvalidOperationException("windows-update-version-comparison-smoke-failed");
         var updateAsset = GitHubUpdateService.SelectWindowsAsset([
-            new GitHubReleaseAsset("CodexRemote-Android-v0.5.3-debug.apk", "https://example.invalid/android", 1),
-            new GitHubReleaseAsset("CodexRemote-Windows-x64-v0.5.3.zip", "https://example.invalid/windows", 2),
+            new GitHubReleaseAsset("CodexRemote-Android-v0.5.4-debug.apk", "https://example.invalid/android", 1),
+            new GitHubReleaseAsset("CodexRemote-Windows-x64-v0.5.4.zip", "https://example.invalid/windows", 2),
         ]);
-        if (updateAsset?.Name != "CodexRemote-Windows-x64-v0.5.3.zip")
+        if (updateAsset?.Name != "CodexRemote-Windows-x64-v0.5.4.zip")
             throw new InvalidOperationException("windows-update-asset-selection-smoke-failed");
         var device = new DeviceInfo(
             "smoke-device", "Smoke Android", "android", DateTimeOffset.Now.ToUnixTimeMilliseconds());

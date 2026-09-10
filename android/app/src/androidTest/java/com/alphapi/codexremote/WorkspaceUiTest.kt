@@ -342,6 +342,34 @@ class WorkspaceUiTest {
     }
 
     @Test
+    fun closesTerminalDialogAfterANewConnectionIsPaired() {
+        compose.setContent {
+            val visible = androidx.compose.runtime.remember {
+                androidx.compose.runtime.mutableStateOf(true)
+            }
+            if (visible.value) {
+                MaterialTheme {
+                    ConnectionManagerDialog(
+                        state = RemoteState(),
+                        onDismiss = { visible.value = false },
+                        onSwitch = {},
+                        onPair = { _, _, _, onSaved -> onSaved() },
+                        onEdit = { _, _, _, _ -> },
+                        onRemove = {},
+                        onClearPairing = {},
+                    )
+                }
+            }
+        }
+
+        compose.onNodeWithTag("connection-url-input").performTextInput("192.168.1.8:8766")
+        compose.onNodeWithTag("connection-code-input").performTextInput("123456")
+        compose.onNodeWithText("配对并切换").performClick()
+
+        compose.onAllNodesWithText("Codex 终端").assertCountEquals(0)
+    }
+
+    @Test
     fun editsASavedTerminalWithoutRequestingAnotherPairingCode() {
         compose.setContent {
             MaterialTheme {
