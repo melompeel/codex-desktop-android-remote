@@ -118,10 +118,87 @@ class ConnectionLoadingStateTest {
         assertTrue(presentation.isError)
     }
 
-    private fun task(threadId: String) = TaskDto(
+    @Test
+    fun cachedConversationKeepsLoadingInsteadOfShowingTransientDetailError() {
+        val presentation = refreshFailurePresentation(
+            BridgeHttpException(503, "{\"error\":\"task-detail-not-found\"}"),
+            RemoteState(
+                connected = true,
+                ipcConnected = true,
+                selectedThreadId = "thread-1",
+                taskDetail = TaskDetailDto(
+                    threadId = "thread-1",
+                    title = "Thread",
+                    status = "running",
+                    revision = 1,
+                    items = listOf(
+                        TimelineItemDto(
+                            id = "cached-item",
+                            turnId = "turn-1",
+                            kind = "assistant",
+                            text = "cached history",
+                        ),
+                    ),
+                ),
+                syncingThreadIds = setOf("thread-1"),
+            ),
+        )
+
+        assertEquals("正在同步最新对话", presentation.message)
+        assertTrue(presentation.shouldRetry)
+        assertFalse(presentation.isError)
+    }
+
+    @Test
+    fun transientHttpFailureOutsideConversationSyncRemainsVisible() {
+        val presentation = refreshFailurePresentation(
+            BridgeHttpException(503, "{\"error\":\"service-unavailable\"}"),
+            RemoteState(connected = true, ipcConnected = true),
+        )
+
+        assertFalse(presentation.shouldRetry)
+        assertTrue(presentation.isError)
+    }
+
+    @Test
+    fun malformedConversationPayloadIsNotHiddenBySyncingState() {
+        val presentation = refreshFailurePresentation(
+            IllegalArgumentException("invalid conversation payload"),
+            RemoteState(
+                connected = true,
+                ipcConnected = true,
+                selectedThreadId = "thread-1",
+                syncingThreadIds = setOf("thread-1"),
+            ),
+        )
+
+        assertEquals("invalid conversation payload", presentation.message)
+        assertFalse(presentation.shouldRetry)
+        assertTrue(presentation.isError)
+    }
+
+    @Test
+    fun runningConversationKeepsLoadingHistoryWithoutGlobalError() {
+        val presentation = refreshFailurePresentation(
+            BridgeHttpException(503, "{\"error\":\"task-history-not-ready\"}"),
+            RemoteState(
+                connected = true,
+                ipcConnected = true,
+                selectedThreadId = "thread-1",
+                tasks = listOf(task("thread-1", status = "active")),
+                loadingOlderHistoryThreads = setOf("thread-1"),
+            ),
+        )
+
+        assertEquals("正在继续加载历史记录", presentation.message)
+        assertTrue(presentation.shouldRetry)
+        assertFalse(presentation.isError)
+    }
+
+    private fun task(threadId: String, status: String = "idle") = TaskDto(
         threadId = threadId,
         title = threadId,
-        status = "idle",
+        status = status,
         revision = 1,
         pendingApprovals = 0,
     )

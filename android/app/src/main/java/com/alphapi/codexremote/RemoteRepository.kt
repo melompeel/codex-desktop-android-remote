@@ -275,10 +275,11 @@ class RemoteRepository private constructor(context: Context) {
                 }
             }
             if (openAction == TaskOpenAction.WAIT) {
-                update { it.copy(syncingThreadIds = it.syncingThreadIds - threadId) }
+                update { it.copy(syncingThreadIds = it.syncingThreadIds + threadId, error = null) }
                 scheduleRefresh(500)
                 return@launch
             }
+            var keepSyncing = false
             try {
                 val bridge = api
                 val openFailure = if (bridge == null) {
@@ -308,7 +309,23 @@ class RemoteRepository private constructor(context: Context) {
                             }
                         }
                         .onFailure { error ->
-                            if (api === bridge && generation == selectionGeneration) recordError(error)
+                            if (api === bridge && generation == selectionGeneration) {
+                                val presentation = refreshFailurePresentation(error, mutableState.value)
+                                if (presentation.shouldRetry && !presentation.isError) {
+                                    keepSyncing = true
+                                    update { state ->
+                                        if (state.selectedThreadId == threadId) {
+                                            state.copy(
+                                                syncingThreadIds = state.syncingThreadIds + threadId,
+                                                error = null,
+                                            )
+                                        } else state
+                                    }
+                                    scheduleRefresh(1_000)
+                                } else {
+                                    recordError(error)
+                                }
+                            }
                         }
                 }
                 if (api === bridge) scheduleRefresh(0)
@@ -318,14 +335,23 @@ class RemoteRepository private constructor(context: Context) {
                     generation == selectionGeneration &&
                     mutableState.value.selectedThreadId == threadId
                 ) {
-                    update {
-                        it.copy(
-                            error = if (openAction == TaskOpenAction.ACTIVATE) {
-                                "无法在电脑端载入此对话，当前仍可查看历史记录"
-                            } else {
-                                "桌面未打开此任务，当前只能查看历史记录"
-                            },
-                        )
+                    val presentation = refreshFailurePresentation(openFailure, mutableState.value)
+                    when {
+                        isAuthorizationFailure(openFailure) -> recordError(openFailure)
+                        presentation.shouldRetry && !presentation.isError -> {
+                            keepSyncing = true
+                            update { it.copy(error = null) }
+                            scheduleRefresh(1_000)
+                        }
+                        else -> update {
+                            it.copy(
+                                error = if (openAction == TaskOpenAction.ACTIVATE) {
+                                    "无法在电脑端载入此对话，当前仍可查看历史记录"
+                                } else {
+                                    "桌面未打开此任务，当前只能查看历史记录"
+                                },
+                            )
+                        }
                     }
                 }
             } finally {
@@ -333,7 +359,15 @@ class RemoteRepository private constructor(context: Context) {
                     if (generation == selectionGeneration || state.selectedThreadId != threadId) {
                         state.copy(
                             activatingThreads = state.activatingThreads - threadId,
-                            syncingThreadIds = state.syncingThreadIds - threadId,
+                            syncingThreadIds = if (
+                                keepSyncing &&
+                                generation == selectionGeneration &&
+                                state.selectedThreadId == threadId
+                            ) {
+                                state.syncingThreadIds + threadId
+                            } else {
+                                state.syncingThreadIds - threadId
+                            },
                         )
                     } else state
                 }
@@ -366,6 +400,7 @@ class RemoteRepository private constructor(context: Context) {
         }
         val job = scope.launch {
             var pagesLoaded = 0
+            var retryAfterFailure = false
             try {
                 while (true) {
                     val state = mutableState.value
@@ -398,8 +433,30 @@ class RemoteRepository private constructor(context: Context) {
             } catch (error: Throwable) {
                 if (error is CancellationException) throw error
                 if (api === bridge && mutableState.value.selectedThreadId == threadId) {
-                    update { it.copy(historyLoadErrorThreads = it.historyLoadErrorThreads + threadId) }
-                    recordError(error)
+                    val presentation = refreshFailurePresentation(error, mutableState.value)
+                    when {
+                        isAuthorizationFailure(error) -> {
+                            update {
+                                it.copy(historyLoadErrorThreads = it.historyLoadErrorThreads + threadId)
+                            }
+                            recordError(error)
+                        }
+                        presentation.shouldRetry && !presentation.isError -> {
+                            retryAfterFailure = true
+                            update {
+                                it.copy(
+                                    historyLoadErrorThreads = it.historyLoadErrorThreads - threadId,
+                                    error = null,
+                                )
+                            }
+                        }
+                        else -> update {
+                            it.copy(
+                                historyLoadErrorThreads = it.historyLoadErrorThreads + threadId,
+                                error = null,
+                            )
+                        }
+                    }
                 }
             } finally {
                 synchronized(historyJobs) {
@@ -410,6 +467,23 @@ class RemoteRepository private constructor(context: Context) {
                         loadingOlderHistoryThreads = it.loadingOlderHistoryThreads - threadId,
                         loadingAllHistoryThreads = it.loadingAllHistoryThreads - threadId,
                     )
+                }
+                if (retryAfterFailure) {
+                    scope.launch {
+                        delay(1_500)
+                        val latest = mutableState.value
+                        val active = latest.tasks.firstOrNull { it.threadId == threadId }
+                            ?.status
+                            ?.lowercase() in setOf("active", "inprogress", "running")
+                        if (
+                            api === bridge &&
+                            latest.connected &&
+                            latest.selectedThreadId == threadId &&
+                            active
+                        ) {
+                            loadHistory(threadId, loadAll)
+                        }
+                    }
                 }
             }
         }
@@ -909,8 +983,13 @@ class RemoteRepository private constructor(context: Context) {
         if (api !== bridge) return
         val completedReviewThreadIds = pendingReviewStore.observe(payload.tasks)
         val requestedSelection = mutableState.value.selectedThreadId
-        val latestDetail = requestedSelection?.let { selected ->
-            runCatching { bridge.taskDetail(selected) }.getOrNull()
+        val latestDetailResult = requestedSelection?.let { selected ->
+            runCatching { bridge.taskDetail(selected) }
+        }
+        val latestDetail = latestDetailResult?.getOrNull()
+        val latestDetailFailure = latestDetailResult?.exceptionOrNull()
+        val detailFailurePresentation = latestDetailFailure?.let {
+            refreshFailurePresentation(it, mutableState.value)
         }
         val queue = if (requestedSelection != null && payload.capabilities.queue) {
             runCatching { bridge.queue(requestedSelection) }.getOrNull()
@@ -950,7 +1029,17 @@ class RemoteRepository private constructor(context: Context) {
                 failedTaskMediaIds = current.failedTaskMediaIds.filterTo(mutableSetOf()) {
                     it in visibleMediaIds
                 },
-                error = null,
+                syncingThreadIds = when {
+                    requestedSelection == null -> current.syncingThreadIds
+                    resolved.threadId != requestedSelection -> current.syncingThreadIds - requestedSelection
+                    latestDetail != null -> current.syncingThreadIds - requestedSelection
+                    detailFailurePresentation?.shouldRetry == true ->
+                        current.syncingThreadIds + requestedSelection
+                    else -> current.syncingThreadIds - requestedSelection
+                },
+                error = detailFailurePresentation?.message?.takeIf {
+                    detailFailurePresentation.isError
+                },
             )
         }
         activeCacheKey()?.let { key ->
@@ -959,6 +1048,7 @@ class RemoteRepository private constructor(context: Context) {
                 runCatching { snapshotCache.saveDetail(key, detail) }
             }
         }
+        if (detailFailurePresentation?.shouldRetry == true) scheduleRefresh(1_500)
     }
 
     private suspend fun refreshWithRecovery() {

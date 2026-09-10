@@ -1,5 +1,7 @@
 package com.alphapi.codexremote
 
+import java.io.IOException
+
 internal data class ConnectionStatusPresentation(
     val text: String,
     val isError: Boolean,
@@ -96,6 +98,39 @@ internal fun refreshFailurePresentation(
             isError = true,
         )
     }
+    val selectedThreadId = state.selectedThreadId
+    val selectedHistoryIsLoading = selectedThreadId != null &&
+        selectedThreadId in state.loadingOlderHistoryThreads
+    val selectedTaskIsActive = state.tasks.firstOrNull { it.threadId == selectedThreadId }
+        ?.status
+        ?.lowercase() in setOf("active", "inprogress", "running")
+    if (
+        state.connected &&
+        state.ipcConnected &&
+        selectedHistoryIsLoading &&
+        selectedTaskIsActive &&
+        isTransientTaskDetailFailure(error)
+    ) {
+        return RefreshFailurePresentation(
+            message = "正在继续加载历史记录",
+            shouldRetry = true,
+            isError = false,
+        )
+    }
+    val selectedTaskIsSyncing = selectedThreadId != null &&
+        selectedThreadId in state.syncingThreadIds
+    if (
+        state.connected &&
+        state.ipcConnected &&
+        selectedTaskIsSyncing &&
+        isTransientTaskDetailFailure(error)
+    ) {
+        return RefreshFailurePresentation(
+            message = "正在同步最新对话",
+            shouldRetry = true,
+            isError = false,
+        )
+    }
     val detail = buildString {
         append(error::class.simpleName.orEmpty())
         append(' ')
@@ -121,4 +156,11 @@ internal fun refreshFailurePresentation(
         shouldRetry = false,
         isError = true,
     )
+}
+
+internal fun isTransientTaskDetailFailure(error: Throwable): Boolean = when (error) {
+    is BridgeHttpException -> error.statusCode in setOf(404, 408, 409, 425, 429) ||
+        error.statusCode in 500..599
+    is IOException -> true
+    else -> false
 }
