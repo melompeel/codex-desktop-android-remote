@@ -1,10 +1,20 @@
 package com.alphapi.codexremote
 
 import java.net.URI
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 internal data class ActivityPresentation(
     val title: String,
     val detail: String,
+)
+
+internal data class QuestionReplyEntry(
+    val question: String,
+    val answer: String,
 )
 
 internal sealed interface ConversationBlock {
@@ -13,6 +23,11 @@ internal sealed interface ConversationBlock {
         val turnId: String,
         val label: String,
         val items: List<TimelineItemDto>,
+    ) : ConversationBlock
+    data class QuestionReply(
+        val turnId: String,
+        val sourceItemId: String,
+        val entries: List<QuestionReplyEntry>,
     ) : ConversationBlock
 }
 
@@ -32,7 +47,7 @@ internal fun presentConversation(items: List<TimelineItemDto>): List<Conversatio
 }
 
 private fun presentTurn(items: List<TimelineItemDto>): List<ConversationBlock> {
-    val finalAnchor = items.indexOfLast { it.kind == "assistant" }
+    val finalAnchor = items.indexOfLast { it.kind == "assistant" && parseQuestionReply(it.text).isEmpty() }
         .takeIf { it >= 0 }
         ?: items.indexOfLast { it.kind == "image" }.takeIf { it >= 0 }
     val finalSource = finalAnchor?.let { sourceItemId(items[it]) }
@@ -51,18 +66,63 @@ private fun presentTurn(items: List<TimelineItemDto>): List<ConversationBlock> {
     }
 
     items.forEach { item ->
+        val questionReply = item.takeIf { it.kind == "assistant" }
+            ?.let { parseQuestionReply(it.text).takeIf(List<QuestionReplyEntry>::isNotEmpty) }
         val visible = item.kind == "user" || item.kind == "userImage" ||
             (finalSource != null && sourceItemId(item) == finalSource &&
                 (item.kind == "assistant" || item.kind == "image"))
-        if (visible) {
-            flushProcess()
-            result += ConversationBlock.Item(item)
-        } else {
-            process += item
+        when {
+            questionReply != null -> {
+                flushProcess()
+                result += ConversationBlock.QuestionReply(
+                    turnId = item.turnId,
+                    sourceItemId = item.id,
+                    entries = questionReply,
+                )
+            }
+            visible -> {
+                flushProcess()
+                result += ConversationBlock.Item(item)
+            }
+            else -> process += item
         }
     }
     flushProcess()
     return result
+}
+
+private val questionReplyEnvelope = Regex(
+    """<send_user_message_question_reply>\s*(.*?)\s*</send_user_message_question_reply>""",
+    setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE),
+)
+
+private val questionReplyJson = Json {
+    ignoreUnknownKeys = true
+    isLenient = true
+}
+
+internal fun parseQuestionReply(text: String): List<QuestionReplyEntry> =
+    questionReplyEnvelope.findAll(text).flatMap { match ->
+        val payload = match.groupValues.getOrNull(1).orEmpty()
+        val values = runCatching { questionReplyJson.parseToJsonElement(payload) }
+            .getOrNull() as? JsonArray
+            ?: return@flatMap emptySequence()
+        values.asSequence().mapNotNull { value ->
+            val entry = value as? JsonObject ?: return@mapNotNull null
+            val question = entry.jsonText("question")?.trim().orEmpty()
+            val answer = entry.jsonText("answer")?.trim().orEmpty()
+            question.takeIf(String::isNotEmpty)?.let {
+                QuestionReplyEntry(question = it, answer = answer)
+            }
+        }
+    }.toList()
+
+private fun JsonObject.jsonText(key: String): String? = when (val value = this[key]) {
+    is JsonPrimitive -> value.contentOrNull
+    is JsonArray -> value.joinToString("\n") { element ->
+        (element as? JsonPrimitive)?.contentOrNull ?: element.toString()
+    }
+    else -> value?.toString()
 }
 
 private fun sourceItemId(item: TimelineItemDto): String = item.sourceItemId

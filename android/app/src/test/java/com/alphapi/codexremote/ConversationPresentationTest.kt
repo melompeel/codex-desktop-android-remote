@@ -44,6 +44,29 @@ class ConversationPresentationTest {
     }
 
     @Test
+    fun doesNotExposeRawUserInputQuestionReplyInProcessDetails() {
+        val rawReply = """<send_user_message_question_reply>
+[{"question":"后台登记的主体是哪一种？","answer":"目前是个体主体"}]
+</send_user_message_question_reply>"""
+        val blocks = presentConversation(
+            listOf(
+                TimelineItemDto("u", "turn-1", "user", "请确认主体"),
+                TimelineItemDto("question-reply", "turn-1", "assistant", rawReply),
+                TimelineItemDto("final", "turn-1", "assistant", "明白了"),
+            ),
+        )
+
+        assertTrue(blocks.none { block ->
+            block is ConversationBlock.Process && block.items.any {
+                it.text.contains("send_user_message_question_reply") || it.text.contains("questionItemId")
+            }
+        })
+        val questionReply = blocks.filterIsInstance<ConversationBlock.QuestionReply>().single()
+        assertEquals("后台登记的主体是哪一种？", questionReply.entries.single().question)
+        assertEquals("目前是个体主体", questionReply.entries.single().answer)
+    }
+
+    @Test
     fun stripsTerminalEscapeAndControlSequences() {
         val cleaned = sanitizeTerminalText("\u001B[?25l\u001B[2Jfirst\u0000\rsecond\u001BPprivate\u001B\\\n\\\\server\\share\u001B[0m")
 

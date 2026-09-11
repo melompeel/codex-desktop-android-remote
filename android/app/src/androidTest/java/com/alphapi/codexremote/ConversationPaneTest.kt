@@ -346,6 +346,54 @@ class ConversationPaneTest {
     }
 
     @Test
+    fun rendersAnsweredUserInputAsAReadableConversationBlock() {
+        val rawReply = """<send_user_message_question_reply>
+[{"question":"后台登记的主体是哪一种？","answer":"目前是个体主体"}]
+</send_user_message_question_reply>"""
+        compose.setContent {
+            MaterialTheme {
+                TaskConversationPane(
+                    task = TaskDto("question-thread", "问答任务", "idle", 1, 0, true),
+                    detail = TaskDetailDto(
+                        threadId = "question-thread",
+                        title = "问答任务",
+                        status = "idle",
+                        revision = 1,
+                        items = listOf(
+                            TimelineItemDto("user", "turn-1", "user", "请确认主体"),
+                            TimelineItemDto("question", "turn-1", "assistant", rawReply),
+                            TimelineItemDto("final", "turn-1", "assistant", "明白了"),
+                        ),
+                    ),
+                    canWrite = false,
+                    draft = "",
+                    deliveryMode = DeliveryMode.START,
+                    queued = emptyList(),
+                    queueReady = false,
+                    attachments = emptyList(),
+                    models = emptyList(),
+                    capabilities = RemoteCapabilitiesDto(),
+                    sending = false,
+                    stopping = false,
+                    onDraftChange = {},
+                    onDeliveryChange = {},
+                    onSend = {},
+                    onStop = {},
+                    onCancelQueued = {},
+                    onOpenSettings = {},
+                    onAttachmentsSelected = {},
+                    onRemoveAttachment = {},
+                )
+            }
+        }
+
+        compose.onNodeWithText("已回答的问题").assertIsDisplayed()
+        compose.onNodeWithText("后台登记的主体是哪一种？").assertIsDisplayed()
+        compose.onNodeWithText("已选择：目前是个体主体").assertIsDisplayed()
+        compose.onAllNodesWithText("send_user_message_question_reply", substring = true).assertCountEquals(0)
+    }
+
+    @Test
     fun exposesSteerQueueStopAndQueuedCancellationWhileTaskIsActive() {
         var delivery = DeliveryMode.STEER
         var stopped = false

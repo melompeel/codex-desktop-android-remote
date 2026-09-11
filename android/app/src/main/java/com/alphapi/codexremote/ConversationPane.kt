@@ -465,16 +465,19 @@ private fun ConversationTimeline(
                 key = { _, block -> when (block) {
                     is ConversationBlock.Item -> "${block.item.turnId}:${block.item.id}"
                     is ConversationBlock.Process -> "${block.turnId}:process:${block.items.firstOrNull()?.id}"
+                    is ConversationBlock.QuestionReply -> "${block.turnId}:question:${block.sourceItemId}"
                 } },
             ) { index, block ->
                 val turnId = when (block) {
                     is ConversationBlock.Item -> block.item.turnId
                     is ConversationBlock.Process -> block.turnId
+                    is ConversationBlock.QuestionReply -> block.turnId
                 }
                 val previousTurnId = blocks.getOrNull(index - 1)?.let {
                     when (it) {
                         is ConversationBlock.Item -> it.item.turnId
                         is ConversationBlock.Process -> it.turnId
+                        is ConversationBlock.QuestionReply -> it.turnId
                     }
                 }
                 val startsTurn = index == 0 || previousTurnId != turnId
@@ -496,6 +499,7 @@ private fun ConversationTimeline(
                         failedTaskMediaIds,
                         onLoadTaskMedia,
                     )
+                    is ConversationBlock.QuestionReply -> QuestionReplyCard(block)
                 }
             }
             if (detail.status == "active") {
@@ -516,6 +520,41 @@ private fun ConversationTimeline(
                 containerColor = MaterialTheme.colorScheme.surface,
             ) {
                 Icon(Icons.Default.KeyboardArrowDown, "回到最新消息")
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuestionReplyCard(block: ConversationBlock.QuestionReply) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
+        Surface(
+            color = Color(0xFFF0F0ED),
+            shape = MaterialTheme.shapes.small,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    "已回答的问题",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                block.entries.forEach { entry ->
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(entry.question, style = MaterialTheme.typography.bodyMedium)
+                        if (entry.answer.isNotBlank()) {
+                            Text(
+                                "已选择：${entry.answer}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
             }
         }
     }
