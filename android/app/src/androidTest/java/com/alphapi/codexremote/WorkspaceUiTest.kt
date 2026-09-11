@@ -19,13 +19,59 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.junit.Rule
 import org.junit.Test
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 
 class WorkspaceUiTest {
     @get:Rule
     val compose = createComposeRule()
+
+    @Test
+    fun selectsAndSubmitsAUserInputOption() {
+        var submitted: Map<String, List<String>>? = null
+        val request = ApprovalDto(
+            requestId = "request-1",
+            threadId = "thread-1",
+            method = "item/tool/requestUserInput",
+            expiresAt = Long.MAX_VALUE,
+            payload = buildJsonObject {
+                put("params", buildJsonObject {
+                    put("questions", buildJsonArray {
+                        add(buildJsonObject {
+                            put("id", "entity")
+                            put("header", "主体类型")
+                            put("question", "后台登记的主体是哪一种？")
+                            put("options", buildJsonArray {
+                                add(buildJsonObject { put("label", "个体工商户") })
+                                add(buildJsonObject { put("label", "企业") })
+                            })
+                        })
+                    })
+                })
+            },
+        )
+        compose.setContent {
+            MaterialTheme {
+                UserInputDialog(
+                    request = request,
+                    onDismiss = {},
+                    onSubmit = { submitted = it },
+                )
+            }
+        }
+
+        compose.onNodeWithText("后台登记的主体是哪一种？").assertIsDisplayed()
+        compose.onNodeWithText("个体工商户").performClick()
+        compose.onNodeWithText("提交回答").assertIsEnabled().performClick()
+        compose.runOnIdle {
+            assertEquals(listOf("个体工商户"), submitted?.get("entity"))
+        }
+    }
 
     @Test
     fun disconnectedTaskListDoesNotShowTheLoadingSpinner() {

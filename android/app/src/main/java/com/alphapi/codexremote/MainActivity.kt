@@ -1107,7 +1107,7 @@ private data class UserQuestion(
 )
 
 @Composable
-private fun UserInputDialog(
+internal fun UserInputDialog(
     request: ApprovalDto,
     onDismiss: () -> Unit,
     onSubmit: (Map<String, List<String>>) -> Unit,
