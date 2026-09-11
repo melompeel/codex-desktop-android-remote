@@ -394,6 +394,53 @@ class ConversationPaneTest {
     }
 
     @Test
+    fun rendersMarkdownInUserMessages() {
+        compose.setContent {
+            MaterialTheme {
+                TaskConversationPane(
+                    task = TaskDto("markdown-user", "Markdown", "idle", 1, 0, true),
+                    detail = TaskDetailDto(
+                        threadId = "markdown-user",
+                        title = "Markdown",
+                        status = "idle",
+                        revision = 1,
+                        items = listOf(
+                            TimelineItemDto(
+                                "user-markdown",
+                                "turn-1",
+                                "user",
+                                "# 课程大纲\n\n**核心设计**",
+                            ),
+                        ),
+                    ),
+                    canWrite = false,
+                    draft = "",
+                    deliveryMode = DeliveryMode.START,
+                    queued = emptyList(),
+                    queueReady = false,
+                    attachments = emptyList(),
+                    models = emptyList(),
+                    capabilities = RemoteCapabilitiesDto(),
+                    sending = false,
+                    stopping = false,
+                    onDraftChange = {},
+                    onDeliveryChange = {},
+                    onSend = {},
+                    onStop = {},
+                    onCancelQueued = {},
+                    onOpenSettings = {},
+                    onAttachmentsSelected = {},
+                    onRemoveAttachment = {},
+                )
+            }
+        }
+
+        compose.onNodeWithContentDescription("课程大纲", substring = true).assertIsDisplayed()
+        compose.onNodeWithContentDescription("核心设计", substring = true).assertIsDisplayed()
+        compose.onAllNodesWithContentDescription("**核心设计**", substring = true).assertCountEquals(0)
+    }
+
+    @Test
     fun exposesSteerQueueStopAndQueuedCancellationWhileTaskIsActive() {
         var delivery = DeliveryMode.STEER
         var stopped = false

@@ -98,6 +98,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -628,7 +630,7 @@ private fun ConversationEntry(
     onLoadTaskMedia: (String) -> Unit,
 ) {
     when (item.kind) {
-        "user" -> UserMessage(item.text)
+        "user" -> UserMessage(item.text, markwon)
         "userImage" -> TimelineImage(item.media, mediaFile, mediaLoading, mediaFailed, onLoadTaskMedia, fromUser = true)
         "assistant" -> AssistantMessage(item.text, markwon)
         "plan" -> PlanMessage(item.text, markwon)
@@ -747,21 +749,21 @@ private fun TimelineImage(
 }
 
 @Composable
-private fun UserMessage(text: String) {
+private fun UserMessage(text: String, markwon: Markwon) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         Surface(
             color = Color(0xFFE9E9E5),
             shape = MaterialTheme.shapes.small,
             modifier = Modifier.widthIn(max = 344.dp),
         ) {
-            SelectionContainer {
-                Text(
-                    text,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                    style = MaterialTheme.typography.bodyLarge,
-                    lineHeight = 24.sp,
-                )
-            }
+            MarkdownBody(
+                markdown = text,
+                markwon = markwon,
+                textSizeSp = 17f,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+            )
         }
     }
 }
@@ -824,9 +826,10 @@ private fun MarkdownBody(
     markwon: Markwon,
     textSizeSp: Float = 17f,
     textColor: Color = Color(0xFF232321),
+    modifier: Modifier = Modifier.fillMaxWidth(),
 ) {
     val segments = remember(markdown) { splitMarkdownSegments(markdown) }
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         segments.forEachIndexed { index, segment ->
             when (segment) {
                 is MarkdownSegment.Prose -> MarkdownProse(
@@ -902,6 +905,7 @@ private fun MarkdownProse(
     modifier: Modifier = Modifier.fillMaxWidth(),
 ) {
     val linkColor = MaterialTheme.colorScheme.primary.toArgb()
+    val accessibleText = remember(markdown) { markdownAccessibilityText(markdown) }
     AndroidView(
         factory = { viewContext ->
             TextView(viewContext).apply {
@@ -918,10 +922,19 @@ private fun MarkdownProse(
             view.setLinkTextColor(linkColor)
             view.tag = key
             markwon.setMarkdown(view, markdown)
+            view.contentDescription = view.text
         },
-        modifier = modifier,
+        modifier = modifier.semantics {
+            contentDescription = accessibleText
+        },
     )
 }
+
+private fun markdownAccessibilityText(markdown: String): String = markdown
+    .replace(Regex("(?m)^\\s{0,3}#{1,6}\\s+"), "")
+    .replace(Regex("\\*{2,3}([^*]+)\\*{2,3}"), "$1")
+    .replace(Regex("(?m)^\\s*[-*+]\\s+"), "• ")
+    .replace(Regex("`([^`]+)`"), "$1")
 
 @Composable
 private fun CodeBlock(code: String, language: String? = null) {
